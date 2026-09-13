@@ -1,0 +1,2 @@
+-- Chạy lần lượt 0001_initial.sql và 0002_learning_plus.sql trong Cloudflare D1.
+-- Giới hạn giai đoạn khởi tạo: tối đa 10.000 tài khoản SFN được cưỡng chế bằng cả CHECK + trigger + counter.
