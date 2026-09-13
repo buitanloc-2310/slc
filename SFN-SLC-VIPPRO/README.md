@@ -1,111 +1,60 @@
-# SLC — Trung tâm Học tập Số Sky First Network
+# Trung tâm Học tập Số Sky First Network — V10 HARDENED SUPER CENTER
 
-Domain: `https://slc.skyfirst.io.vn`
+**Sky First Network Digital Learning Center** · `https://slc.skyfirst.io.vn`
 
-Bản source này là nền tảng chạy trên Cloudflare Workers, D1, R2 và Durable Objects.
+V10 tập trung vào hai mục tiêu: **vận hành phần lớn trên website/Admin** và **giảm các lỗi lõi có thể gây mất quyền truy cập, lộ dữ liệu hoặc khóa người dùng**. D1 tiếp tục chỉ giữ dữ liệu quan hệ; R2 giữ tệp; Durable Object xử lý signaling realtime; trình duyệt giữ autosave cục bộ khi phù hợp.
 
-## Hạ tầng đã chốt
+## V10 nâng cấp chính
+
+- Control Center tự nâng schema V10 khi Super Admin mở trang quản trị.
+- Trang chẩn đoán lõi: D1, bảng V10, R2 binding, Durable Object, Resend và Setup Token.
+- Ghi `request_id` cho lỗi server và lưu sự cố 5xx vào `system_incidents` để truy vết.
+- Rate-limit đăng nhập theo định danh + IP băm; không lưu IP thô.
+- Phiên đăng nhập dùng thời hạn cấu hình từ Admin; có force logout và tự dọn dữ liệu tạm.
+- Sửa quyền truy cập lớp: bài tập, bài kiểm tra, bài nộp và file nộp không còn dựa vào ID đoán được.
+- Kích hoạt tài khoản vô hiệu hóa các activation token cũ của cùng người dùng.
+- Upload an toàn hơn: giới hạn file xác minh; xóa object R2 nếu insert metadata D1 lỗi; file HTML/SVG/JS nguy hiểm được tải xuống thay vì chạy inline cùng origin.
+- Exam Mode có resume sau reload, autosave D1 + localStorage, timeout server, tự giải phóng lock khi hết thời gian và trình soạn MCQ trực tiếp trên web.
+- Class Chat và Lịch lớp tích hợp ngay trong trang lớp.
+- Giáo viên/trợ giảng xem bài nộp và chấm điểm trực tiếp trên web.
+- Live Classroom dùng access token do backend cấp; client không còn tự khai role/name để signaling tin tưởng.
+- Hỗ trợ khách vào phòng học bằng link riêng khi Admin cho phép; mic/camera vẫn tắt mặc định.
+- Token phòng học đủ dài cho phiên học trên 12 giờ; WebRTC mesh vẫn chỉ phù hợp phòng nhỏ. Muốn lớp lớn cần SFU/TURN chuyên dụng.
+- Public policy HTML được lọc các thẻ/thuộc tính nguy hiểm trước khi render.
+- Security headers áp dụng cho API/static response; API trả lỗi kèm request ID thay vì lộ chi tiết exception nội bộ.
+
+## Web-first / Admin-first
+
+Sau deploy, các tác vụ thường ngày có thể làm trên Control Center: xét hồ sơ, cấp SFN ID, tạo hàng loạt tài khoản, phân quyền, khóa/mở, gửi lại link đặt mật khẩu, đăng xuất phiên, tạo/lưu trữ lớp, đổi mã lớp, thêm thành viên, quản lý ticket, website public, thông báo, email template, chính sách, xuất dữ liệu, dọn token/session và chạy chẩn đoán hệ thống.
+
+### Nâng từ V9 lên V10
+
+1. Deploy source V10.
+2. Đăng nhập bằng Super Admin.
+3. Mở **Control Center**. Frontend gọi `/api/admin/system/upgrade`; endpoint chạy migration idempotent cho V9 + V10.
+4. Mở tab **Hệ thống** → **Kiểm tra lõi hệ thống**.
+5. Nếu dùng email, bấm **Gửi email kiểm tra**.
+
+Không bắt buộc chạy SQL thủ công khi Super Admin vẫn đăng nhập được. `migrations/0006_v10_hardening.sql` vẫn được giữ để CI, backup hoặc phục hồi.
+
+## Cloudflare bindings
 
 - D1 binding: `DB`
-- D1 database id: `6fd6a6c3-aae6-4b11-89e0-8e13a0e27d3c`
+- D1 database ID: `6fd6a6c3-aae6-4b11-89e0-8e13a0e27d3c`
 - R2 binding: `FILES`
 - R2 bucket: `skyfirsthoctap`
 - Durable Object binding: `LIVE_ROOM`
-- Email hỗ trợ hiển thị: `support@skyfirst.io.vn`
+- Secret cần thiết cho email: `RESEND_API_KEY`
+- Secret khởi tạo hệ thống: `SETUP_TOKEN`
+- Sender: `Trung tâm Học tập Số Sky First Network <slc@skyfirst.io.vn>`
 
-## Chức năng đã viết chạy thật trong source
-
-- Giao diện SLC responsive, gradient rực rỡ, không dùng nền trắng tinh làm chủ đạo.
-- Logo Sky First do chủ dự án cung cấp.
-- Footer: Quyền riêng tư, Bảo mật, Điều khoản, Hỗ trợ, nhận diện Việt Nam.
-- Chỉ tài khoản SFN được đăng nhập; không có đăng ký tự do.
-- Form yêu cầu cấp tài khoản có ảnh chân dung, ảnh HS/SV, đơn vị học tập, lớp/khóa, SFN unit, vai trò, mục đích, quyền mong muốn.
-- Admin duyệt yêu cầu và hệ thống cấp SFN ID.
-- Kích hoạt tài khoản bằng token và tự đặt mật khẩu.
-- Giới hạn giai đoạn khởi tạo tối đa 10.000 tài khoản, cưỡng chế ở cả API và D1.
-- Quản lý phiên đăng nhập bằng cookie HttpOnly/Secure/SameSite.
-- Lớp học, mã lớp, tham gia bằng mã.
-- Bảng tin lớp.
-- Học liệu upload trực tiếp vào R2.
-- Bài tập và nhiệm vụ TNV.
-- Nộp bài dạng text/file.
-- Kiểm tra định kỳ, autosave, event log, chấm tự động MCQ/True-False.
-- Chế độ kiểm tra khóa các khu khác trong SLC khi phiên thi đang hoạt động.
-- Ghi nhận rời tab, blur, fullscreen exit, copy, paste.
-- Phòng học WebRTC thật cho lớp nhỏ: mic, camera, share screen, chat realtime.
-- Signaling realtime dùng Durable Object, không ghi presence/cam/mic liên tục vào D1.
-- QR lớp sinh trực tiếp trên web.
-- PDF/TXT/MD/CSV/JSON -> trích nội dung -> tạo quiz draft trên web.
-- Support ticket thật.
-- Admin Control Center và thống kê tài khoản/lớp/yêu cầu.
-- Optional Resend: gửi email kích hoạt nếu có `RESEND_API_KEY`.
-
-## Giới hạn kỹ thuật cần hiểu đúng
-
-Phòng học hiện dùng WebRTC mesh, hoạt động thật nhưng phù hợp lớp nhỏ. Khi cần hàng chục/hàng trăm camera đồng thời, nên thay media layer bằng SFU riêng. Source hiện không giả vờ có SFU.
-
-Website có thể khóa các chức năng trong SLC và phát hiện một số sự kiện trình duyệt khi thi, nhưng trình duyệt không thể khóa toàn bộ Windows/macOS. Thi nghiêm ngặt cấp kiosk cần SFN Exam Client/Safe Exam Browser tương thích ở giai đoạn sau.
-
-## Khởi tạo
-
-1. Cài Node.js.
-2. Chạy `npm install`.
-3. Chạy migrations:
+## Kiểm tra trước deploy
 
 ```bash
-npm run db:migrate
+npm run check
+npx wrangler deploy --dry-run
 ```
 
-4. Tạo secret bootstrap:
+Sau deploy dùng **Control Center → Hệ thống → Kiểm tra lõi hệ thống** để xác minh cấu hình thật trên Cloudflare.
 
-```bash
-npx wrangler secret put SETUP_TOKEN
-```
-
-5. Nếu muốn gửi email kích hoạt tự động:
-
-```bash
-npx wrangler secret put RESEND_API_KEY
-```
-
-6. Deploy:
-
-```bash
-npm run deploy
-```
-
-7. Khởi tạo Super Admin đầu tiên duy nhất:
-
-```bash
-curl -X POST https://slc.skyfirst.io.vn/api/setup/bootstrap \
-  -H "content-type: application/json" \
-  -H "x-setup-token: YOUR_SETUP_TOKEN" \
-  -d '{"full_name":"SFN Super Admin","email":"admin@example.com","phone":"","password":"CHANGE-THIS-STRONG-PASSWORD"}'
-```
-
-Sau khi đã có user đầu tiên, endpoint bootstrap tự từ chối chạy lại.
-
-## Giới hạn 10.000 tài khoản
-
-Có ba lớp bảo vệ:
-
-1. `users.sfn_no CHECK(sfn_no BETWEEN 1 AND 10000)`.
-2. Trigger `trg_users_max_10000` chặn insert khi đủ 10.000 user.
-3. Counter API chỉ tăng khi `value < 10000`.
-
-Do đó giai đoạn khởi tạo không thể cấp SFN ID vượt quá `SFN10000`.
-
-## Cấu trúc dữ liệu
-
-D1 chỉ giữ metadata/quan hệ cần bền vững: account, class, membership, assignment, exam, score, ticket...
-
-R2 giữ file nặng: ảnh xác minh, học liệu, bài nộp.
-
-Durable Objects giữ signaling realtime cho live classroom.
-
-## Chính sách thiết kế
-
-- Icon dùng cùng hệ SVG `currentColor`, không mỗi icon một màu.
-- Màu rực rỡ nằm ở gradient/background/card, không biến icon thành bảng màu.
-- Nhận diện Việt Nam được đặt tinh tế ở footer.
-- Không sử dụng wording khiến SLC tự nhận là cơ sở giáo dục được cấp phép.
+> V10 giảm đáng kể các lỗi đã phát hiện bằng static audit và kiểm tra migration, nhưng không nên tuyên bố bất kỳ hệ thống phần mềm nào “không thể có lỗi”. Với dữ liệu thật, nên thử nghiệm staging trước khi mở rộng quy mô.

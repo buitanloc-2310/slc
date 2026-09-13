@@ -1,2 +1,9 @@
--- Chạy lần lượt 0001_initial.sql và 0002_learning_plus.sql trong Cloudflare D1.
--- Giới hạn giai đoạn khởi tạo: tối đa 10.000 tài khoản SFN được cưỡng chế bằng cả CHECK + trigger + counter.
+-- SLC D1
+-- Khuyến nghị: để Wrangler chạy migrations bằng `npm run db:migrate`.
+-- Nếu chạy thủ công trong Cloudflare D1 Console, chạy lần lượt:
+--   migrations/0001_initial.sql
+--   migrations/0002_learning_plus.sql
+--   migrations/0003_public_account_email.sql
+--
+-- Giới hạn giai đoạn khởi tạo tối đa 10.000 tài khoản được cưỡng chế ở D1 và API.
+-- Không hiển thị giới hạn này trên giao diện public.

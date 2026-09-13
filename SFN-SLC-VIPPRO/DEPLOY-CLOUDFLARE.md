@@ -1,29 +1,23 @@
-# Deploy SLC đúng kiểu Cloudflare Worker
+# Deploy Cloudflare — V10
 
-Dự án này là Cloudflare Worker + Assets + D1 + R2 + Durable Objects, KHÔNG phải Cloudflare Pages tĩnh.
+Dự án này là **Cloudflare Worker**, không phải Pages static-only.
 
-## GitHub root phải có trực tiếp
-- package.json
-- wrangler.jsonc
-- src/
-- public/
-- migrations/
+Nếu repository vẫn có thư mục bọc `SFN-SLC-VIPPRO/`:
 
-Không để tất cả nằm trong thư mục con `SFN-SLC-VIPPRO/`.
-
-## Cloudflare
-Tạo/import dưới Workers, không chọn Pages static hosting.
-
-- Install/build command: `npm install && npm run check`
+- Root directory: `SFN-SLC-VIPPRO`
+- Build command: `npm install && npm run check`
 - Deploy command: `npx wrangler deploy`
-- Root directory: `/` (để trống nếu giao diện cho phép)
+- Không nhập Build output directory kiểu Pages.
 
-Sau đó chạy D1 migrations một lần:
-`npx wrangler d1 migrations apply sfn-slc-db --remote`
+Bindings đã khai trong `wrangler.jsonc`:
 
-Secrets:
-- SETUP_TOKEN
-- RESEND_API_KEY (nếu dùng email)
+- `DB` → D1 `sfn-slc-db`
+- `FILES` → R2 `skyfirsthoctap`
+- `LIVE_ROOM` → Durable Object `LiveRoom`
 
-Custom domain:
-- slc.skyfirst.io.vn
+Secrets cần đặt trong Cloudflare:
+
+- `SETUP_TOKEN`
+- `RESEND_API_KEY`
+
+Sau khi deploy V10 từ V9: đăng nhập Super Admin → mở **Control Center** → tab **Hệ thống** → **Kiểm tra lõi hệ thống**. Control Center tự gọi endpoint nâng schema idempotent.
