@@ -33,3 +33,9 @@ Tài khoản SFN, giới hạn 10.000 tài khoản, yêu cầu cấp tài khoả
 Cloudflare Pages không thể tự tạo Durable Object trong cùng Pages project. Source đã xử lý thiếu binding an toàn: các phần còn lại vẫn chạy; endpoint realtime trả 503 có mã `LIVE_SIGNALING_NOT_BOUND` cho đến khi binding Durable Object/Service được thêm.
 
 Xem `PAGES-SETUP.md` để triển khai.
+
+
+## V10.3 Pages D1 Installer Fix
+- Sửa lỗi `PRAGMA foreign_keys = ON;` làm `/api/setup/install` trả `D1_EXEC_ERROR: incomplete input` trên Cloudflare Pages Functions.
+- Installer tự loại bỏ PRAGMA `foreign_keys` trước khi gửi schema vào D1.
+- Có thể chạy lại an toàn sau lần cài dở vì schema sử dụng `IF NOT EXISTS`/`INSERT OR IGNORE`.

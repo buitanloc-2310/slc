@@ -197,6 +197,14 @@ async function schemaReady(env){
   try { await env.DB.prepare(`SELECT 1 ok FROM users LIMIT 1`).first(); await env.DB.prepare(`SELECT 1 ok FROM system_settings LIMIT 1`).first(); return true; }
   catch { return false; }
 }
+function normalizeD1SchemaSql(sql=''){
+  // Cloudflare D1 already enforces foreign keys. Executing PRAGMA foreign_keys
+  // through Pages Functions can fail with `incomplete input`, so remove it.
+  return String(sql)
+    .replace(/^\s*PRAGMA\s+foreign_keys\s*=\s*(?:ON|OFF)\s*;?\s*$/gim, '')
+    .replace(/^\s*PRAGMA\s+foreign_keys\s*;?\s*$/gim, '')
+    .trim();
+}
 async function installSchema(env){
   const stages = [
     ['core_schema', AUTO_SCHEMA_SQL],
@@ -204,7 +212,9 @@ async function installSchema(env){
     ['v10_schema', EXTRA_V10_SCHEMA_SQL]
   ];
   const completed=[];
-  for (const [stage, sql] of stages) {
+  for (const [stage, rawSql] of stages) {
+    const sql=normalizeD1SchemaSql(rawSql);
+    if(!sql){ completed.push(stage); continue; }
     try {
       await env.DB.exec(sql);
       completed.push(stage);
