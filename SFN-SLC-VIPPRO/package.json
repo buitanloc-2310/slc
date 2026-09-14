@@ -1,6 +1,6 @@
 {
   "name": "sfn-slc",
-  "version": "11.0.0-pages",
+  "version": "13.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
     "deploy": "wrangler pages deploy public --project-name slc",
     "db:migrate": "wrangler d1 migrations apply sfn-slc-db --remote",
     "db:migrate:local": "wrangler d1 migrations apply sfn-slc-db --local",
-    "check": "node --check src/index.js && node --check src/schema-v11.js && node --check src/live-room.js && node --check public/app.js && node --check functions/api/[[path]].js"
+    "check": "node --check src/index.js && node --check src/schema-v11.js && node --check src/live-room.js && node --check src/realtime-sfu.js && node --check src/v13-platform.js && node --check public/app.js && node --check public/classroom/sfu-client.js && node --check public/classroom/v13-classroom.js && node --check functions/api/[[path]].js"
   },
   "devDependencies": {
     "wrangler": "^4.34.0"

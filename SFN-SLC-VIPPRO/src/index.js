@@ -1,5 +1,7 @@
 import { LiveRoom } from './live-room.js';
 import { V11_SCHEMA_STAGES } from './schema-v11.js';
+import { realtimeSfuConfig, createRealtimeSession, addRealtimeTracks, renegotiateRealtimeSession, ensureRealtimeSfuSchema } from './realtime-sfu.js';
+import { ensureV13Schema, getClassLiveSettings, safeJson, logLiveEvent } from './v13-platform.js';
 export { LiveRoom };
 
 const SECURITY_HEADERS = {'x-content-type-options':'nosniff','referrer-policy':'strict-origin-when-cross-origin','x-frame-options':'SAMEORIGIN','permissions-policy':'camera=(self), microphone=(self), display-capture=(self), geolocation=()','cross-origin-opener-policy':'same-origin-allow-popups'};
@@ -68,6 +70,20 @@ function htmlEsc(s=''){return String(s ?? '').replace(/[&<>"']/g,m=>({'&':'&amp;
 function validEmail(s=''){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(s));}
 async function sha256Text(s=''){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(String(s)));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');}
 async function requireClassMember(env,classId,userId,roles=null){const m=await env.DB.prepare(`SELECT role,status FROM class_members WHERE class_id=? AND user_id=? AND status='active'`).bind(classId,userId).first();if(!m)throw Object.assign(new Error('FORBIDDEN'),{status:403});if(roles&&!roles.includes(m.role))throw Object.assign(new Error('FORBIDDEN'),{status:403});return m;}
+async function requireLiveAccess(env,classId,token){
+  const clean=str(token); if(!clean||!classId)throw Object.assign(new Error('LIVE_AUTH'),{status:401});
+  const row=await env.DB.prepare(`SELECT t.class_id,t.user_id,t.guest_name,t.role,t.expires_at,COALESCE(u.full_name,t.guest_name,'Guest') display_name FROM live_access_tokens t LEFT JOIN users u ON u.id=t.user_id WHERE t.token=? AND t.class_id=? AND t.expires_at>CURRENT_TIMESTAMP LIMIT 1`).bind(clean,classId).first();
+  if(!row)throw Object.assign(new Error('LIVE_AUTH'),{status:401});
+  const ownerKey=row.user_id?`user:${row.user_id}`:`guest:${(await sha256Text(clean)).slice(0,24)}`;
+  return {...row,owner_key:ownerKey,display_name:str(row.display_name).slice(0,80)||'Guest'};
+}
+async function requireOwnedSfuSession(env,sessionId,classId,access){
+  await ensureRealtimeSfuSchema(env);
+  const row=await env.DB.prepare(`SELECT * FROM live_sfu_sessions WHERE session_id=? AND class_id=? AND owner_key=? AND status='active' LIMIT 1`).bind(sessionId,classId,access.owner_key).first();
+  if(!row)throw Object.assign(new Error('SFU_SESSION_FORBIDDEN'),{status:403});
+  await env.DB.prepare(`UPDATE live_sfu_sessions SET last_seen=CURRENT_TIMESTAMP WHERE session_id=?`).bind(sessionId).run().catch(()=>{});
+  return row;
+}
 async function checkLoginThrottle(env,key){try{const r=await env.DB.prepare(`SELECT attempts,window_started_at,blocked_until FROM login_throttle WHERE key=?`).bind(key).first();if(!r)return {allowed:true};if(r.blocked_until&&new Date(r.blocked_until)>new Date())return {allowed:false,retry_after:Math.max(1,Math.ceil((new Date(r.blocked_until)-Date.now())/1000))};const age=Date.now()-new Date(r.window_started_at).getTime();if(age>15*60*1000){await env.DB.prepare(`DELETE FROM login_throttle WHERE key=?`).bind(key).run();return {allowed:true}}return {allowed:true}}catch{return {allowed:true}}}
 async function recordLoginFailure(env,key,limit=10){try{const row=await env.DB.prepare(`SELECT attempts,window_started_at FROM login_throttle WHERE key=?`).bind(key).first();const now=Date.now();if(!row||now-new Date(row.window_started_at).getTime()>15*60*1000){await env.DB.prepare(`INSERT INTO login_throttle(key,attempts,window_started_at,blocked_until,updated_at) VALUES(?,1,CURRENT_TIMESTAMP,NULL,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET attempts=1,window_started_at=CURRENT_TIMESTAMP,blocked_until=NULL,updated_at=CURRENT_TIMESTAMP`).bind(key).run();return}const attempts=Number(row.attempts||0)+1;const blocked=attempts>=limit?new Date(now+15*60*1000).toISOString():null;await env.DB.prepare(`UPDATE login_throttle SET attempts=?,blocked_until=?,updated_at=CURRENT_TIMESTAMP WHERE key=?`).bind(attempts,blocked,key).run()}catch{}}
 async function clearLoginThrottle(env,key){try{await env.DB.prepare(`DELETE FROM login_throttle WHERE key=?`).bind(key).run()}catch{}}
@@ -185,10 +201,10 @@ async function routeApi(request, env, ctx, url) {
   const path = url.pathname;
   const method = request.method;
 
-  if (path === '/api/health') return ok({ service:'Sky First Network Digital Learning Center', version:'SLC Production Rebuild', installer:'V11_ONE_STATEMENT_ENGINE', schema_stages:V11_SCHEMA_STAGES.length, schema_statements:V11_SCHEMA_STAGES.reduce((n,x)=>n+x.statements.length,0), time:nowIso(), domain:env.APP_URL, environment:{ setup_token_configured:!!env.SETUP_TOKEN, d1_bound:!!env.DB, r2_bound:!!env.FILES, resend_configured:!!env.RESEND_API_KEY } });
+  if (path === '/api/health') return ok({ service:'Sky First Network Digital Learning Center', version:'Sky First School V13', installer:'V11_ONE_STATEMENT_ENGINE', schema_stages:V11_SCHEMA_STAGES.length, schema_statements:V11_SCHEMA_STAGES.reduce((n,x)=>n+x.statements.length,0), time:nowIso(), domain:env.APP_URL, environment:{ setup_token_configured:!!env.SETUP_TOKEN, d1_bound:!!env.DB, r2_bound:!!env.FILES, resend_configured:!!env.RESEND_API_KEY } });
 
   if (path === '/api/setup/installer-info' && method === 'GET') return ok({
-    version:'SLC Production Rebuild',
+    version:'Sky First School V13',
     engine:'V11_ONE_STATEMENT_ENGINE',
     uses_db_exec:false,
     uses_pragma_foreign_keys:false,
@@ -558,12 +574,148 @@ async function routeApi(request, env, ctx, url) {
     const u=await requireUser(request,env); const sub=await env.DB.prepare(`SELECT s.id,a.class_id,a.points FROM submissions s JOIN assignments a ON a.id=s.assignment_id WHERE s.id=?`).bind(gradeSubmission[1]).first(); if(!sub)return bad('Không tìm thấy bài nộp.',404); await requireClassMember(env,sub.class_id,u.user_id,['teacher','assistant']); const b=await request.json(); const score=b.score===''||b.score==null?null:Number(b.score); if(score!=null&&(!Number.isFinite(score)||score<0||score>Number(sub.points)))return bad('Điểm không hợp lệ.'); await env.DB.prepare(`UPDATE submissions SET score=?,feedback=?,status='graded',updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(score,str(b.feedback).slice(0,5000),sub.id).run(); return ok();
   }
 
+
+  const v13Live = path.match(/^\/api\/classes\/([^/]+)\/live-v13$/);
+  if(v13Live && method==='GET'){
+    const u=await requireUser(request,env); const classId=v13Live[1]; const member=['school_admin','super_admin'].includes(u.role)?{role:u.role}:await requireClassMember(env,classId,u.user_id); await ensureV13Schema(env);
+    const settings=await getClassLiveSettings(env,classId);
+    const polls=await env.DB.prepare(`SELECT p.*, (SELECT COUNT(*) FROM live_poll_answers a WHERE a.poll_id=p.id) answer_count FROM live_polls p WHERE p.class_id=? ORDER BY p.created_at DESC LIMIT 20`).bind(classId).all();
+    const resources=await env.DB.prepare(`SELECT * FROM live_resources WHERE class_id=? ORDER BY pinned DESC,created_at DESC LIMIT 50`).bind(classId).all();
+    let attendance=[];
+    if(['teacher','assistant'].includes(member.role)) attendance=(await env.DB.prepare(`SELECT * FROM live_attendance WHERE class_id=? ORDER BY joined_at DESC LIMIT 300`).bind(classId).all()).results||[];
+    return ok({settings,polls:(polls.results||[]).map(x=>({...x,options:safeJson(x.options_json,[])})),resources:resources.results||[],attendance,my_role:member.role,version:'V13'});
+  }
+  if(v13Live && method==='PATCH'){
+    const u=await requireUser(request,env); const classId=v13Live[1]; if(!['school_admin','super_admin'].includes(u.role))await requireClassMember(env,classId,u.user_id,['teacher','assistant']); await ensureV13Schema(env); const b=await request.json();
+    const current=await getClassLiveSettings(env,classId);
+    const bool=k=>(b[k]===undefined?Number(current[k]||0):(b[k]?1:0));
+    const theme=['sky','ocean','lavender','mint','sunrise','rose','midnight'].includes(str(b.theme))?str(b.theme):current.theme;
+    const layout=['auto','grid','speaker','presentation','compact'].includes(str(b.layout_default))?str(b.layout_default):current.layout_default;
+    const color=(v,fb)=>/^#[0-9a-f]{6}$/i.test(str(v))?str(v):fb;
+    const maxVideos=Math.max(2,Math.min(24,Number(b.max_visible_videos??current.max_visible_videos??12)));
+    const flags=typeof b.feature_flags==='object'&&b.feature_flags?b.feature_flags:safeJson(current.feature_flags_json||'{}',{});
+    await env.DB.prepare(`INSERT INTO class_live_settings(class_id,waiting_room,allow_student_mic,allow_student_camera,allow_student_share,allow_chat,allow_reactions,allow_anonymous_pulse,theme,accent,background,surface,layout_default,max_visible_videos,adaptive_video,confidence_camera,feature_flags_json,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(class_id) DO UPDATE SET waiting_room=excluded.waiting_room,allow_student_mic=excluded.allow_student_mic,allow_student_camera=excluded.allow_student_camera,allow_student_share=excluded.allow_student_share,allow_chat=excluded.allow_chat,allow_reactions=excluded.allow_reactions,allow_anonymous_pulse=excluded.allow_anonymous_pulse,theme=excluded.theme,accent=excluded.accent,background=excluded.background,surface=excluded.surface,layout_default=excluded.layout_default,max_visible_videos=excluded.max_visible_videos,adaptive_video=excluded.adaptive_video,confidence_camera=excluded.confidence_camera,feature_flags_json=excluded.feature_flags_json,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`)
+      .bind(classId,bool('waiting_room'),bool('allow_student_mic'),bool('allow_student_camera'),bool('allow_student_share'),bool('allow_chat'),bool('allow_reactions'),bool('allow_anonymous_pulse'),theme,color(b.accent,current.accent),color(b.background,current.background),color(b.surface,current.surface),layout,maxVideos,bool('adaptive_video'),bool('confidence_camera'),JSON.stringify(flags),u.user_id).run();
+    await logLiveEvent(env,classId,'settings.updated',`user:${u.user_id}`,u.full_name,{theme,layout,maxVideos}); return ok({settings:await getClassLiveSettings(env,classId)});
+  }
+  const v13Attendance=path.match(/^\/api\/classes\/([^/]+)\/live-v13\/attendance$/);
+  if(v13Attendance && method==='POST'){
+    const u=await requireUser(request,env); const classId=v13Attendance[1]; const member=await requireClassMember(env,classId,u.user_id); await ensureV13Schema(env); const b=await request.json(); const action=str(b.action||'heartbeat'); const key=`user:${u.user_id}`;
+    if(action==='join'){
+      const existing=await env.DB.prepare(`SELECT id FROM live_attendance WHERE class_id=? AND user_key=? AND left_at IS NULL ORDER BY joined_at DESC LIMIT 1`).bind(classId,key).first();
+      if(existing) await env.DB.prepare(`UPDATE live_attendance SET last_seen=CURRENT_TIMESTAMP,reconnect_count=reconnect_count+1,device_json=? WHERE id=?`).bind(JSON.stringify(b.device||{}),existing.id).run();
+      else await env.DB.prepare(`INSERT INTO live_attendance(id,class_id,user_key,user_id,display_name,role,joined_at,last_seen,device_json) VALUES(?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,?)`).bind(crypto.randomUUID(),classId,key,u.user_id,u.full_name,member.role,JSON.stringify(b.device||{})).run();
+      await logLiveEvent(env,classId,'attendance.join',key,u.full_name,{});
+    } else if(action==='leave'){
+      await env.DB.prepare(`UPDATE live_attendance SET left_at=CURRENT_TIMESTAMP,last_seen=CURRENT_TIMESTAMP WHERE id=(SELECT id FROM live_attendance WHERE class_id=? AND user_key=? AND left_at IS NULL ORDER BY joined_at DESC LIMIT 1)`).bind(classId,key).run();
+      await logLiveEvent(env,classId,'attendance.leave',key,u.full_name,{});
+    } else await env.DB.prepare(`UPDATE live_attendance SET last_seen=CURRENT_TIMESTAMP WHERE id=(SELECT id FROM live_attendance WHERE class_id=? AND user_key=? AND left_at IS NULL ORDER BY joined_at DESC LIMIT 1)`).bind(classId,key).run();
+    return ok();
+  }
+  const v13Polls=path.match(/^\/api\/classes\/([^/]+)\/live-v13\/polls$/);
+  if(v13Polls && method==='POST'){
+    const u=await requireUser(request,env); const classId=v13Polls[1]; await requireClassMember(env,classId,u.user_id,['teacher','assistant']); await ensureV13Schema(env); const b=await request.json(); const question=str(b.question).slice(0,300); const options=(Array.isArray(b.options)?b.options:[]).map(x=>str(x).slice(0,180)).filter(Boolean).slice(0,8); if(question.length<2||options.length<2)return bad('Cần câu hỏi và ít nhất 2 lựa chọn.'); const id=crypto.randomUUID();
+    await env.DB.prepare(`INSERT INTO live_polls(id,class_id,question,options_json,anonymous,status,created_by,created_at) VALUES(?,?,?,?,?,'open',?,CURRENT_TIMESTAMP)`).bind(id,classId,question,JSON.stringify(options),b.anonymous?1:0,u.user_id).run(); await logLiveEvent(env,classId,'poll.created',`user:${u.user_id}`,u.full_name,{poll_id:id,question}); return ok({id,question,options});
+  }
+  const v13PollAnswer=path.match(/^\/api\/classes\/([^/]+)\/live-v13\/polls\/([^/]+)\/answer$/);
+  if(v13PollAnswer && method==='POST'){
+    const u=await requireUser(request,env); const classId=v13PollAnswer[1]; await requireClassMember(env,classId,u.user_id); await ensureV13Schema(env); const poll=await env.DB.prepare(`SELECT * FROM live_polls WHERE id=? AND class_id=? AND status='open'`).bind(v13PollAnswer[2],classId).first(); if(!poll)return bad('Poll đã đóng hoặc không tồn tại.',404); const b=await request.json(); const options=safeJson(poll.options_json,[]); const idx=Number(b.option_index); if(!Number.isInteger(idx)||idx<0||idx>=options.length)return bad('Lựa chọn không hợp lệ.');
+    await env.DB.prepare(`INSERT INTO live_poll_answers(poll_id,responder_key,user_id,option_index,answered_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(poll_id,responder_key) DO UPDATE SET option_index=excluded.option_index,answered_at=CURRENT_TIMESTAMP`).bind(poll.id,`user:${u.user_id}`,u.user_id,idx).run(); return ok();
+  }
+  const v13PollClose=path.match(/^\/api\/classes\/([^/]+)\/live-v13\/polls\/([^/]+)\/close$/);
+  if(v13PollClose && method==='POST'){
+    const u=await requireUser(request,env); const classId=v13PollClose[1]; await requireClassMember(env,classId,u.user_id,['teacher','assistant']); await ensureV13Schema(env); await env.DB.prepare(`UPDATE live_polls SET status='closed',closed_at=CURRENT_TIMESTAMP WHERE id=? AND class_id=?`).bind(v13PollClose[2],classId).run(); const results=await env.DB.prepare(`SELECT option_index,COUNT(*) n FROM live_poll_answers WHERE poll_id=? GROUP BY option_index ORDER BY option_index`).bind(v13PollClose[2]).all(); return ok({results:results.results||[]});
+  }
+  const v13Resources=path.match(/^\/api\/classes\/([^/]+)\/live-v13\/resources$/);
+  if(v13Resources && method==='POST'){
+    const u=await requireUser(request,env); const classId=v13Resources[1]; await requireClassMember(env,classId,u.user_id,['teacher','assistant']); await ensureV13Schema(env); const b=await request.json(); const title=str(b.title).slice(0,160),urlv=str(b.url).slice(0,1200); if(!title||!urlv)return bad('Thiếu tên hoặc liên kết tài nguyên.'); const id=crypto.randomUUID(); await env.DB.prepare(`INSERT INTO live_resources(id,class_id,title,url,resource_type,pinned,created_by,created_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(id,classId,title,urlv,str(b.resource_type||'link').slice(0,30),b.pinned?1:0,u.user_id).run(); await logLiveEvent(env,classId,'resource.added',`user:${u.user_id}`,u.full_name,{id,title}); return ok({id});
+  }
+  const v13Catchup=path.match(/^\/api\/classes\/([^/]+)\/live-v13\/catchup$/);
+  if(v13Catchup && method==='GET'){
+    const u=await requireUser(request,env); const classId=v13Catchup[1]; await requireClassMember(env,classId,u.user_id); await ensureV13Schema(env); const mins=Math.max(1,Math.min(30,Number(url.searchParams.get('minutes')||5))); const rows=await env.DB.prepare(`SELECT event_type,actor_name,detail_json,created_at FROM live_room_events WHERE class_id=? AND datetime(created_at)>=datetime('now',?) ORDER BY created_at DESC LIMIT 40`).bind(classId,`-${mins} minutes`).all(); return ok({events:(rows.results||[]).map(x=>({...x,detail:safeJson(x.detail_json,{})}))});
+  }
+  if(path==='/api/admin/v13/live-metrics' && method==='GET'){
+    await requireRole(request,env,['super_admin','school_admin']); await ensureV13Schema(env); const [a,s,t]=await Promise.all([env.DB.prepare(`SELECT COUNT(DISTINCT class_id) classes,COUNT(*) sessions FROM live_attendance WHERE left_at IS NULL AND datetime(last_seen)>datetime('now','-2 minutes')`).first(),env.DB.prepare(`SELECT COUNT(*) sessions FROM live_sfu_sessions WHERE status='active' AND datetime(last_seen)>datetime('now','-2 minutes')`).first().catch(()=>({sessions:0})),env.DB.prepare(`SELECT COUNT(*) tracks FROM live_sfu_tracks WHERE active=1 AND kind='video'`).first().catch(()=>({tracks:0}))]); return ok({active_classes:Number(a?.classes||0),online_users:Number(a?.sessions||0),sfu_sessions:Number(s?.sessions||0),publishing_video_tracks:Number(t?.tracks||0),version:'V13'});
+  }
+
   if(path==='/api/live/access-token' && method==='POST'){
     const u=await requireUser(request,env); const b=await request.json(); const classId=str(b.class_id); const m=await requireClassMember(env,classId,u.user_id); const token=randomToken(28); const exp=new Date(Date.now()+18*60*60*1000).toISOString(); const role=['teacher','assistant'].includes(m.role)?m.role:'student'; await env.DB.prepare(`INSERT INTO live_access_tokens(token,class_id,user_id,guest_name,role,expires_at,created_at) VALUES(?,?,?,'',?,?,CURRENT_TIMESTAMP)`).bind(token,classId,u.user_id,role,exp).run(); return ok({token,expires_at:exp,role});
   }
   const guestLive=path.match(/^\/api\/public\/live\/([^/]+)\/guest-token$/);
   if(guestLive && method==='POST'){
     const cfg=await getSettings(env).catch(()=>({})); if(cfg.allow_guest_live==='0')return bad('Phòng học hiện không cho phép khách tham gia.',403); const b=await request.json(); const name=str(b.name).slice(0,80); if(name.length<2)return bad('Vui lòng nhập tên hiển thị.'); const cls=await env.DB.prepare(`SELECT id,name FROM classes WHERE id=? AND status='active'`).bind(guestLive[1]).first(); if(!cls)return bad('Không tìm thấy lớp.',404); const token=randomToken(28); const exp=new Date(Date.now()+14*60*60*1000).toISOString(); await env.DB.prepare(`INSERT INTO live_access_tokens(token,class_id,user_id,guest_name,role,expires_at,created_at) VALUES(?,?,NULL,?,'guest',?,CURRENT_TIMESTAMP)`).bind(token,cls.id,name,exp).run(); return ok({token,expires_at:exp,class:cls});
+  }
+
+  if(path==='/api/live/sfu/status' && method==='GET'){
+    const cfg=realtimeSfuConfig(env);
+    return ok({configured:cfg.configured,app_name:cfg.appName,transport:'cloudflare-realtime-sfu',fallback:'mesh'});
+  }
+
+  if(path==='/api/live/sfu/session/new' && method==='POST'){
+    const b=await request.json(); const classId=str(b.class_id); const access=await requireLiveAccess(env,classId,b.access_token);
+    await ensureRealtimeSfuSchema(env);
+    const session=await createRealtimeSession(env);
+    if(!session?.sessionId)return bad('Realtime SFU không trả về sessionId.',502);
+    await env.DB.prepare(`INSERT INTO live_sfu_sessions(session_id,class_id,owner_key,owner_name,role,status,created_at,last_seen) VALUES(?,?,?,?,?,'active',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(session_id) DO UPDATE SET class_id=excluded.class_id,owner_key=excluded.owner_key,owner_name=excluded.owner_name,role=excluded.role,status='active',last_seen=CURRENT_TIMESTAMP`).bind(session.sessionId,classId,access.owner_key,access.display_name,access.role||'student').run();
+    return ok({session_id:session.sessionId,app_name:realtimeSfuConfig(env).appName});
+  }
+
+  const sfuTracks=path.match(/^\/api\/live\/sfu\/session\/([^/]+)\/tracks$/);
+  if(sfuTracks && method==='POST'){
+    const b=await request.json(); const classId=str(b.class_id); const access=await requireLiveAccess(env,classId,b.access_token); const sessionId=sfuTracks[1];
+    await requireOwnedSfuSession(env,sessionId,classId,access);
+    const op=b.operation==='subscribe'?'subscribe':'publish'; const tracks=Array.isArray(b.tracks)?b.tracks.slice(0,64):[];
+    if(!tracks.length)return bad('Không có track để xử lý.');
+    if(op==='publish'){
+      const liveSettings=await getClassLiveSettings(env,classId).catch(()=>null); const isHost=['teacher','assistant'].includes(access.role);
+      if(!isHost&&liveSettings){
+        for(const t of tracks){const source=str(t.source||t.kind);if(source==='mic'&&!Number(liveSettings.allow_student_mic))return bad('Giáo viên đang khóa micro của học viên.',403);if(source==='camera'&&!Number(liveSettings.allow_student_camera))return bad('Giáo viên đang khóa camera của học viên.',403);if(source==='screen'&&!Number(liveSettings.allow_student_share))return bad('Bạn chưa được phép chia sẻ màn hình.',403);}
+      }
+      if(tracks.some(t=>t.location!=='local'))return bad('Publish chỉ chấp nhận local track.');
+      if(tracks.length>4)return bad('Mỗi lần chỉ publish tối đa 4 track.');
+      for(const t of tracks){if(!str(t.trackName)||!['audio','video'].includes(str(t.kind)))return bad('Track publish không hợp lệ.');}
+    }else{
+      if(tracks.some(t=>t.location!=='remote'||!str(t.sessionId)||!str(t.trackName)))return bad('Subscribe track không hợp lệ.');
+      for(const t of tracks){
+        const allowed=await env.DB.prepare(`SELECT 1 ok FROM live_sfu_tracks WHERE class_id=? AND session_id=? AND track_name=? AND active=1 LIMIT 1`).bind(classId,str(t.sessionId),str(t.trackName)).first();
+        if(!allowed)return bad('Track không thuộc phòng học này hoặc không còn hoạt động.',403);
+      }
+    }
+    const payload={tracks:tracks.map(t=>op==='publish'?{location:'local',mid:t.mid,trackName:str(t.trackName)}:{location:'remote',sessionId:str(t.sessionId),trackName:str(t.trackName)})};
+    if(b.sessionDescription?.sdp&&b.sessionDescription?.type)payload.sessionDescription={type:str(b.sessionDescription.type),sdp:String(b.sessionDescription.sdp)};
+    const result=await addRealtimeTracks(env,sessionId,payload);
+    if(op==='publish'){
+      const byName=new Map(tracks.map(t=>[str(t.trackName),t]));
+      for(const rt of result.tracks||[]){
+        const input=byName.get(str(rt.trackName))||tracks[0]; const id=crypto.randomUUID();
+        await env.DB.prepare(`INSERT INTO live_sfu_tracks(id,class_id,session_id,track_name,mid,kind,source,owner_key,owner_name,role,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(session_id,track_name) DO UPDATE SET mid=excluded.mid,kind=excluded.kind,source=excluded.source,owner_name=excluded.owner_name,role=excluded.role,active=1,updated_at=CURRENT_TIMESTAMP`).bind(id,classId,sessionId,str(rt.trackName||input.trackName),str(rt.mid??input.mid??''),str(input.kind),str(input.source||input.kind),access.owner_key,access.display_name,access.role||'student').run();
+      }
+    }
+    return ok({...result});
+  }
+
+  const sfuRenegotiate=path.match(/^\/api\/live\/sfu\/session\/([^/]+)\/renegotiate$/);
+  if(sfuRenegotiate && method==='PUT'){
+    const b=await request.json(); const classId=str(b.class_id); const access=await requireLiveAccess(env,classId,b.access_token); const sessionId=sfuRenegotiate[1]; await requireOwnedSfuSession(env,sessionId,classId,access);
+    if(!b.sessionDescription?.sdp||!b.sessionDescription?.type)return bad('Thiếu SDP renegotiation.');
+    const result=await renegotiateRealtimeSession(env,sessionId,{sessionDescription:{type:str(b.sessionDescription.type),sdp:String(b.sessionDescription.sdp)}}); return ok({...result});
+  }
+
+  const sfuUnpublish=path.match(/^\/api\/live\/sfu\/session\/([^/]+)\/unpublish$/);
+  if(sfuUnpublish && method==='POST'){
+    const b=await request.json(); const classId=str(b.class_id); const access=await requireLiveAccess(env,classId,b.access_token); const sessionId=sfuUnpublish[1]; await requireOwnedSfuSession(env,sessionId,classId,access);
+    const name=str(b.track_name); await env.DB.prepare(`UPDATE live_sfu_tracks SET active=0,updated_at=CURRENT_TIMESTAMP WHERE class_id=? AND session_id=? AND track_name=? AND owner_key=?`).bind(classId,sessionId,name,access.owner_key).run(); return ok();
+  }
+
+  const sfuEnd=path.match(/^\/api\/live\/sfu\/session\/([^/]+)\/end$/);
+  if(sfuEnd && method==='POST'){
+    const b=await request.json(); const classId=str(b.class_id); const access=await requireLiveAccess(env,classId,b.access_token); const sessionId=sfuEnd[1]; await requireOwnedSfuSession(env,sessionId,classId,access);
+    await env.DB.batch([env.DB.prepare(`UPDATE live_sfu_sessions SET status='ended',ended_at=CURRENT_TIMESTAMP,last_seen=CURRENT_TIMESTAMP WHERE session_id=?`).bind(sessionId),env.DB.prepare(`UPDATE live_sfu_tracks SET active=0,updated_at=CURRENT_TIMESTAMP WHERE session_id=?`).bind(sessionId)]); return ok();
+  }
+
+  if(path==='/api/live/sfu/room-tracks' && method==='POST'){
+    const b=await request.json(); const classId=str(b.class_id); await requireLiveAccess(env,classId,b.access_token); await ensureRealtimeSfuSchema(env);
+    const rows=await env.DB.prepare(`SELECT t.session_id,t.track_name,t.mid,t.kind,t.source,t.owner_name,t.role,t.updated_at FROM live_sfu_tracks t JOIN live_sfu_sessions s ON s.session_id=t.session_id WHERE t.class_id=? AND t.active=1 AND s.status='active' AND datetime(s.last_seen)>datetime('now','-18 hours') ORDER BY t.updated_at DESC LIMIT 500`).bind(classId).all(); return ok({tracks:rows.results||[]});
   }
 
   if(path==='/api/support/tickets' && method==='GET'){
@@ -612,7 +764,7 @@ async function routeApi(request, env, ctx, url) {
     await requireRole(request,env,['super_admin','school_admin']); return ok({settings:await getSettings(env)});
   }
   if(path==='/api/admin/settings' && method==='PUT'){
-    const admin=await requireRole(request,env,['super_admin']); const b=await request.json(); const allowed=['public_intro_title','public_intro_text','public_about_title','public_about_text','site_name','site_name_en','support_email','system_email','account_request_enabled','maintenance_mode','maintenance_message','default_session_days','allow_guest_live','default_class_unit','footer_product_text','footer_copyright','live_mesh_max_peers','login_rate_limit','max_upload_mb','account_portrait_max_mb','account_document_max_mb','public_status_text']; const statements=[];
+    const admin=await requireRole(request,env,['super_admin']); const b=await request.json(); const allowed=['live_room_max_participants','public_intro_title','public_intro_text','public_about_title','public_about_text','site_name','site_name_en','support_email','system_email','account_request_enabled','maintenance_mode','maintenance_message','default_session_days','allow_guest_live','default_class_unit','footer_product_text','footer_copyright','live_mesh_max_peers','login_rate_limit','max_upload_mb','account_portrait_max_mb','account_document_max_mb','public_status_text']; const statements=[];
     for(const key of allowed){if(Object.prototype.hasOwnProperty.call(b,key))statements.push(env.DB.prepare(`INSERT INTO system_settings(key,value,updated_by,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(key,str(b[key]),admin.user_id));}
     if(statements.length)await env.DB.batch(statements); await adminLog(env,admin.user_id,'settings.update',{keys:statements.length}); return ok({settings:await getSettings(env)});
   }
@@ -773,7 +925,7 @@ async function routeApi(request, env, ctx, url) {
   }
 
   if(path==='/api/admin/system/upgrade' && method==='POST'){
-    const admin=await requireRole(request,env,['super_admin']); const upgrade=await ensureLatestSchema(env); await env.DB.prepare(`INSERT INTO system_settings(key,value,updated_by,updated_at) VALUES('platform_version','V11',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value='V11',updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(admin.user_id).run(); await adminLog(env,admin.user_id,'system.schema_upgrade',{version:'V11',completed:upgrade.completed}); return ok({version:'V11',message:'Cấu trúc V11 đã được kiểm tra và cập nhật bằng installer an toàn.',completed:upgrade.completed});
+    const admin=await requireRole(request,env,['super_admin']); const upgrade=await ensureLatestSchema(env); await ensureRealtimeSfuSchema(env); await env.DB.prepare(`INSERT INTO system_settings(key,value,updated_by,updated_at) VALUES('platform_version','V13',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value='V13',updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(admin.user_id).run(); await adminLog(env,admin.user_id,'system.schema_upgrade',{version:'V13',completed:upgrade.completed}); await ensureV13Schema(env); return ok({version:'V13',message:'Sky First School V13 đã được kiểm tra và cập nhật an toàn.',completed:upgrade.completed});
   }
 
   if(path==='/api/admin/system/diagnostics' && method==='GET'){
@@ -785,9 +937,10 @@ async function routeApi(request, env, ctx, url) {
     try{await env.DB.prepare(`SELECT 1 FROM class_messages LIMIT 1`).first();add('Class chat V10',true,'Bảng trò chuyện sẵn sàng')}catch(e){add('Class chat V10',false,e.message)}
     add('R2 FILES',!!env.FILES,env.FILES?'Binding FILES đã có':'Thiếu binding FILES');
     add('Durable Object LIVE_ROOM',!!env.LIVE_ROOM,env.LIVE_ROOM?'Binding LIVE_ROOM đã có':'Thiếu binding LIVE_ROOM');
+    {const sf=realtimeSfuConfig(env);add('Realtime SFU / skyfirsthoc',sf.configured,sf.configured?`Đã cấu hình ${sf.appName}`:'Thiếu REALTIME_APP_ID hoặc REALTIME_APP_SECRET');}
     add('Resend',!!env.RESEND_API_KEY,env.RESEND_API_KEY?'RESEND_API_KEY đã cấu hình':'Chưa có RESEND_API_KEY; email sẽ không gửi');
     add('Setup token',!!env.SETUP_TOKEN,env.SETUP_TOKEN?'SETUP_TOKEN đã cấu hình':'Nên cấu hình SETUP_TOKEN để bảo vệ khởi tạo');
-    const failed=checks.filter(x=>!x.ok).length; return ok({version:'V10',status:failed?'attention':'healthy',failed,checks,time:nowIso()});
+    const failed=checks.filter(x=>!x.ok).length; return ok({version:'V12-SFU',status:failed?'attention':'healthy',failed,checks,time:nowIso()});
   }
 
   if(path==='/api/admin/system/test-email' && method==='POST'){
@@ -802,7 +955,7 @@ async function routeApi(request, env, ctx, url) {
     await requireRole(request,env,['super_admin','school_admin','account_admin']);
     const [users,classes,requests,tickets]=await Promise.all([
       env.DB.prepare(`SELECT COUNT(*) n FROM users`).first(),env.DB.prepare(`SELECT COUNT(*) n FROM classes WHERE status='active'`).first(),env.DB.prepare(`SELECT COUNT(*) n FROM account_requests WHERE status='pending'`).first(),env.DB.prepare(`SELECT COUNT(*) n FROM support_tickets WHERE status!='resolved'`).first()
-    ]); const failedMail=await env.DB.prepare(`SELECT COUNT(*) n FROM email_logs WHERE status='failed'`).first(); const activeSessions=await env.DB.prepare(`SELECT COUNT(*) n FROM sessions WHERE expires_at>CURRENT_TIMESTAMP`).first(); const liveTokens=await env.DB.prepare(`SELECT COUNT(*) n FROM live_access_tokens WHERE expires_at>CURRENT_TIMESTAMP`).first().catch(()=>({n:0})); return ok({users:users.n,account_limit:MAX_ACCOUNTS,classes:classes.n,pending_requests:requests.n,open_tickets:tickets.n,failed_emails:failedMail?.n||0,active_sessions:activeSessions?.n||0,live_tokens:liveTokens?.n||0,version:'V10',schema_ready:true});
+    ]); const failedMail=await env.DB.prepare(`SELECT COUNT(*) n FROM email_logs WHERE status='failed'`).first(); const activeSessions=await env.DB.prepare(`SELECT COUNT(*) n FROM sessions WHERE expires_at>CURRENT_TIMESTAMP`).first(); const liveTokens=await env.DB.prepare(`SELECT COUNT(*) n FROM live_access_tokens WHERE expires_at>CURRENT_TIMESTAMP`).first().catch(()=>({n:0})); return ok({users:users.n,account_limit:MAX_ACCOUNTS,classes:classes.n,pending_requests:requests.n,open_tickets:tickets.n,failed_emails:failedMail?.n||0,active_sessions:activeSessions?.n||0,live_tokens:liveTokens?.n||0,version:'V12-SFU',schema_ready:true});
   }
 
   const fileMatch=path.match(/^\/api\/files\/([^/]+)$/);
@@ -819,6 +972,8 @@ async function routeApi(request, env, ctx, url) {
       media_local:true,
       discussion_http:true,
       realtime_signaling:!!(env.LIVE_ROOM||env.LIVE_SERVICE),
+      realtime_sfu:realtimeSfuConfig(env).configured,
+      realtime_sfu_app:realtimeSfuConfig(env).appName,
       screen_share:true,
       note:env.LIVE_ROOM||env.LIVE_SERVICE?'Thời gian thực đã được liên kết.':'Chưa có dịch vụ signaling; phòng vẫn hỗ trợ micro/camera cục bộ và thảo luận HTTPS cho thành viên lớp.'
     });

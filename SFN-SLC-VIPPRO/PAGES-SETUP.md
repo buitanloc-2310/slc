@@ -52,3 +52,17 @@ Nếu D1 chưa có schema, giao diện cài đặt lần đầu sẽ cho phép n
 Cloudflare Pages Functions có thể **sử dụng** Durable Object, nhưng Cloudflare không cho tạo/deploy Durable Object ngay bên trong Pages project. Vì vậy toàn bộ phần tài khoản, D1, R2, lớp học, bài tập, thi, quản trị, email, hỗ trợ... chạy trên Pages Functions; riêng WebSocket realtime của phòng học cần một Durable Object Worker có sẵn và binding `LIVE_ROOM`, hoặc Service Binding `LIVE_SERVICE`.
 
 Nếu chưa liên kết realtime, API phòng live trả mã 503 rõ ràng thay vì làm hỏng toàn hệ thống.
+
+
+## V12 — Cloudflare Realtime SFU `skyfirsthoc`
+
+Bản V12 giữ Durable Object/WebSocket cho presence, chat và điều khiển lớp; camera/micro/screen có thể chuyển sang Cloudflare Realtime SFU.
+
+Trong **Pages project `slc` > Settings > Variables and Secrets**, cấu hình:
+
+- `REALTIME_APP_ID`: App ID của Realtime App `skyfirsthoc`.
+- `REALTIME_APP_SECRET`: App Secret của Realtime App `skyfirsthoc` (**Secret**, không commit vào GitHub).
+
+`REALTIME_API_BASE=https://rtc.live.cloudflare.com/v1` và `REALTIME_APP_NAME=skyfirsthoc` đã có trong cấu hình. Khi thiếu App ID/Secret, phòng học tự dùng WebRTC mesh dự phòng; khi đủ hai giá trị, frontend chuyển media sang SFU.
+
+Migration mới: `0008_realtime_sfu_foundation.sql`. Migration này chỉ tạo bảng mới, không xóa dữ liệu cũ.

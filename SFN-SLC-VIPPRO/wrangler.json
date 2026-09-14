@@ -8,7 +8,9 @@
     "SUPPORT_EMAIL": "support@skyfirst.io.vn",
     "APP_NAME": "Trung tâm Học tập Số Sky First Network",
     "SESSION_DAYS": "30",
-    "MAIL_FROM": "Trung tâm Học tập Số Sky First Network <slc@skyfirst.io.vn>"
+    "MAIL_FROM": "Trung tâm Học tập Số Sky First Network <slc@skyfirst.io.vn>",
+    "REALTIME_APP_NAME": "skyfirsthoc",
+    "REALTIME_API_BASE": "https://rtc.live.cloudflare.com/v1"
   },
   "d1_databases": [
     {
