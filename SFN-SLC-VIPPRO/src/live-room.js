@@ -120,6 +120,14 @@ export class LiveRoom {
         for(const [id,p] of [...this.clients.entries()]) if(!p.admitted){p.admitted=true;this.sendWelcome(id,classId,maxPeers,transport);this.broadcast({type:'peer-joined',peer:{id,name:p.name,role:p.role}},id);} this.broadcastToHosts({type:'waiting-list',waiting:[]}); return;
       }
       if(action==='remove' && target && this.clients.has(target)){try{this.clients.get(target).ws.send(JSON.stringify({type:'host-command',action:'removed',from:peerId,fromName:name}));this.clients.get(target).ws.close(4001,'removed')}catch{};return;}
+      if(action==='policy'){
+        const incoming=msg.settings&&typeof msg.settings==='object'?msg.settings:{};
+        const policy={};
+        for(const k of ['allow_student_mic','allow_student_camera','allow_student_share','allow_chat','allow_reactions']) if(k in incoming) policy[k]=incoming[k]?1:0;
+        for(const [,p] of this.clients) p.settings={...(p.settings||{}),...policy};
+        this.broadcast({type:'host-command',action:'policy',settings:policy,from:peerId,fromName:name,fromRole:role},peerId);
+        return;
+      }
       if(target && this.clients.has(target)){const targetClient=this.clients.get(target);if(action==='lower-hand')targetClient.handRaisedAt=0;try{targetClient.ws.send(JSON.stringify({...msg,from:peerId,fromName:name,fromRole:role}));}catch{};if(action==='lower-hand')this.broadcastToHosts({type:'lower-hand',target});return;}
       this.broadcast({...msg,from:peerId,fromName:name,fromRole:role},peerId); return;
     }

@@ -94,11 +94,13 @@ async function liveRoom(classId,guestName=null){
   const sfuInfo=await api('/api/live/sfu/status').catch(()=>({configured:false,app_name:'skyfirsthoc'}));
   const sfuMode=!!sfuInfo.configured;
   const v13Data=guestName?{settings:{theme:'sky',layout_default:'auto',waiting_room:0,confidence_camera:1},my_role:'guest'}:await api(`/api/classes/${classId}/live-v13`).catch(()=>({settings:{theme:'sky',layout_default:'auto',waiting_room:0,confidence_camera:1},my_role:d.my_role||'student'}));
+  const roomRole=v13Data.my_role||d.my_role||'student';
+  const isHost=['teacher','assistant'].includes(roomRole);
   const prejoin=await runClassroomPrejoin({className:cls.name,displayName,settings:v13Data.settings||{}});
   app.innerHTML=`<div class="meeting-app">
     <header class="meeting-topbar">
       <div class="meeting-title"><button class="meeting-icon-btn" id="leaveTop" title="Quay lại">←</button><div><b>${esc(cls.name)}</b><span>Phòng thảo luận trực tuyến</span></div></div>
-      <div class="meeting-top-actions"><span class="meeting-media-badge" id="mediaModeBadge">V13 · ${sfuMode?'SFU '+esc(sfuInfo.app_name||'skyfirsthoc'):'Mesh dự phòng'}</span><span class="meeting-live-dot"></span><span id="connectionLabel">Đang kết nối…</span><button class="meeting-icon-btn" id="layoutBtn" title="Đổi bố cục">▦</button><button class="meeting-icon-btn" id="themeBtn" title="Đổi nền phòng">☀</button><button class="meeting-icon-btn" id="fullScreenBtn" title="Toàn màn hình">⛶</button></div>
+      <div class="meeting-top-actions"><span class="meeting-role-badge ${isHost?'host':''}">${isHost?(roomRole==='teacher'?'Giáo viên':'Trợ giảng'):(roomRole==='guest'?'Khách':'Học viên')}</span>${isHost?'<button class="meeting-manage-btn" id="teacherControlBtn" title="Điều khiển lớp">🛡 Quản lý lớp</button>':''}<button class="meeting-icon-btn" id="layoutBtn" title="Đổi bố cục">▦</button><button class="meeting-icon-btn" id="themeBtn" title="Đổi nền phòng">☀</button><button class="meeting-icon-btn" id="fullScreenBtn" title="Toàn màn hình">⛶</button></div>
     </header>
     <main class="meeting-main">
       <section class="meeting-stage-wrap">
@@ -110,7 +112,7 @@ async function liveRoom(classId,guestName=null){
             <div class="audio-meter"><i id="audioMeterBar"></i></div>
           </article>
         </div>
-        <div class="meeting-notice" id="meetingNotice">Micro và camera tắt mặc định. Bạn vẫn có thể bật ngay cả khi đang ở phòng một mình.</div>
+        <div class="meeting-notice hidden" id="meetingNotice" role="status" aria-live="polite"></div>
       </section>
       <aside class="meeting-panel" id="meetingPanel">
         <div class="meeting-panel-tabs"><button class="active" data-panel="chat">Thảo luận</button><button data-panel="people">Mọi người <span id="peopleCount">1</span></button><button data-panel="settings">Thiết bị</button></div>
@@ -119,7 +121,7 @@ async function liveRoom(classId,guestName=null){
           <div class="meeting-chat-compose"><textarea id="chatInput" rows="2" placeholder="Nhắn cho lớp…"></textarea><button id="sendChat">➤</button></div>
           <small id="chatMode" class="meeting-muted">Đang chuẩn bị kênh thảo luận…</small>
         </div>
-        <div class="meeting-panel-body hidden" id="panelPeople"><div class="meeting-person"><div class="meeting-mini-avatar">${esc(displayName).slice(0,1).toUpperCase()}</div><div><b>${esc(displayName)}</b><small>Bạn · ${esc(d.my_role||'student')}</small></div></div><div id="remotePeople"></div></div>
+        <div class="meeting-panel-body hidden" id="panelPeople"><div class="meeting-person"><div class="meeting-mini-avatar">${esc(displayName).slice(0,1).toUpperCase()}</div><div><b>${esc(displayName)}</b><small>Bạn · ${esc(roomRole)}</small></div></div><div id="remotePeople"></div></div>
         <div class="meeting-panel-body hidden" id="panelSettings">
           <label>Micro<select id="micSelect"><option value="">Mặc định</option></select></label>
           <label>Camera<select id="camSelect"><option value="">Mặc định</option></select></label>
@@ -134,15 +136,17 @@ async function liveRoom(classId,guestName=null){
       <div class="meeting-dock-group">
         <button class="meeting-control off" id="toggleMic" title="Micro"><span>🎙️</span><small>Micro</small></button>
         <button class="meeting-control off" id="toggleCam" title="Camera"><span>📹</span><small>Camera</small></button>
-        <button class="meeting-control" id="switchCam" title="Đổi camera"><span>🔄</span><small>Đổi cam</small></button>
         <button class="meeting-control" id="shareScreen" title="Chia sẻ màn hình"><span>🖥️</span><small>Trình chiếu</small></button>
         <button class="meeting-control" id="raiseHand" title="Giơ tay"><span>✋</span><small>Giơ tay</small></button>
         <button class="meeting-control" id="reactBtn" title="Phản ứng"><span>👏</span><small>Phản ứng</small></button>
         <button class="meeting-control" id="togglePanel" title="Thảo luận"><span>💬</span><small>Thảo luận</small></button>
+        ${isHost?'<button class="meeting-control host-control" id="teacherDockBtn" title="Quản lý lớp"><span>🛡</span><small>Quản lý</small></button>':''}
+        <button class="meeting-control" id="moreRoomBtn" title="Tùy chọn khác"><span>•••</span><small>Thêm</small></button>
         <button class="meeting-control danger" id="leaveRoom" title="Rời phòng"><span>📞</span><small>Rời phòng</small></button>
       </div>
     </footer>
     <div class="reaction-pop" id="reactionPop"></div>
+    <div class="meeting-more-menu hidden" id="moreRoomMenu"><button id="switchCam">🔄 Đổi camera</button><button id="openDevices">🎛 Thiết bị & Camera Studio</button><button id="hideSelfQuick">🙈 Ẩn/hiện self-view</button></div>
   </div>`;
 
   const localStream=new MediaStream(); let micTrack=null,camTrack=null,screenTrack=null,screenPublishedMeta=null,audioCtx=null,audioRAF=null,currentFacing='user';
@@ -152,8 +156,9 @@ async function liveRoom(classId,guestName=null){
   const hasMedia=!!navigator.mediaDevices?.getUserMedia;
   const hasDisplay=!!navigator.mediaDevices?.getDisplayMedia;
 
-  const setNotice=(text,tone='')=>{const el=$('#meetingNotice');el.textContent=text;el.dataset.tone=tone};
-  const setConnection=(text,online=false)=>{const el=$('#connectionLabel');el.textContent=text;el.closest('.meeting-top-actions')?.classList.toggle('online',online)};
+  let noticeTimer=null;
+  const setNotice=(text,tone='')=>{const el=$('#meetingNotice');if(!el||!text)return;clearTimeout(noticeTimer);el.textContent=text;el.dataset.tone=tone;el.classList.remove('hidden');noticeTimer=setTimeout(()=>el.classList.add('hidden'),tone==='bad'?6500:3200)};
+  const setConnection=()=>{};
   const friendlyMediaError=e=>({NotAllowedError:'Trình duyệt đang chặn quyền. Hãy cho phép camera/micro ở biểu tượng ổ khóa cạnh địa chỉ website.',NotFoundError:'Không tìm thấy thiết bị phù hợp.',NotReadableError:'Thiết bị đang được ứng dụng khác sử dụng.',OverconstrainedError:'Thiết bị không hỗ trợ cấu hình yêu cầu.',SecurityError:'Camera/micro chỉ hoạt động trên HTTPS.'}[e?.name]||e?.message||'Không thể mở thiết bị.');
 
   function applyConfidenceView(){
@@ -229,7 +234,8 @@ async function liveRoom(classId,guestName=null){
   async function syncAllPeers(){for(const [id,pc] of peers)await syncPeer(id,pc)}
   function refreshPeople(){
     $('#peopleCount').textContent=1+peerMeta.size; const wrap=$('#remotePeople');wrap.innerHTML='';
-    for(const [id,p] of peerMeta){const row=document.createElement('div');row.className='meeting-person';row.innerHTML=`<div class="meeting-mini-avatar">${esc((p.name||'T').slice(0,1).toUpperCase())}</div><div><b>${esc(p.name||'Thành viên')}</b><small>${esc(p.role||'student')}</small></div>`;wrap.appendChild(row)}
+    for(const [id,p] of peerMeta){const row=document.createElement('div');row.className='meeting-person';row.innerHTML=`<div class="meeting-mini-avatar">${esc((p.name||'T').slice(0,1).toUpperCase())}</div><div class="meeting-person-meta"><b>${esc(p.name||'Thành viên')}</b><small>${esc(p.role||'student')}</small></div>${isHost?`<div class="meeting-person-actions"><button data-peer-action="mute" data-peer-id="${esc(id)}" title="Tắt mic">🔇</button><button data-peer-action="camera-off" data-peer-id="${esc(id)}" title="Tắt camera">📷</button><button data-peer-action="remove" data-peer-id="${esc(id)}" title="Xóa khỏi phòng">✕</button></div>`:''}`;wrap.appendChild(row)}
+    if(isHost)wrap.querySelectorAll('[data-peer-action]').forEach(btn=>btn.onclick=()=>{if(!wsOnline)return setNotice('Kênh điều khiển lớp chưa sẵn sàng.','warn');const action=btn.dataset.peerAction,target=btn.dataset.peerId;if(action==='remove'&&!confirm('Xóa thành viên này khỏi phòng?'))return;ws.send(JSON.stringify({type:'host-command',action,target}))});
   }
   async function ensurePeer(id,initiator=false,meta={}){
     if(peerMeta.has(id))Object.assign(peerMeta.get(id),meta);else peerMeta.set(id,{name:meta.name||'Thành viên',role:meta.role||'student'});refreshPeople();
@@ -261,9 +267,9 @@ async function liveRoom(classId,guestName=null){
 
   function connectRealtime(){
     if(closing)return;try{ws?.close()}catch{}
-    setConnection('Đang kết nối…',false);
+    setConnection();
     try{ws=new WebSocket(`${wsProto}://${location.host}/api/live/${classId}/ws?token=${encodeURIComponent(access.token)}&transport=${sfuMode?'sfu':'mesh'}`)}catch{setConnection('Chế độ cá nhân',false);return}
-    ws.onopen=()=>{wsOnline=true;setConnection('Trực tuyến',true);setNotice('Đã vào phòng thảo luận. Micro/camera do bạn chủ động điều khiển.','good');$('#chatMode').textContent='Thảo luận thời gian thực đang hoạt động.'};
+    ws.onopen=()=>{wsOnline=true;setConnection();$('#chatMode').textContent='Thảo luận thời gian thực đang hoạt động.'};
     ws.onmessage=async ev=>{
       let m;try{m=JSON.parse(ev.data)}catch{return}
       const v13Consumed=v13?.handleMessage?.(m); if(v13Consumed)return;
@@ -280,16 +286,16 @@ async function liveRoom(classId,guestName=null){
       else if(m.type==='raise-hand')showReaction('✋',m.fromName||'Thành viên');
     };
     ws.onerror=()=>{};
-    ws.onclose=()=>{wsOnline=false;if(closing)return;setConnection('Đang kết nối lại…',false);setNotice('Mạng vừa gián đoạn. V13 đang tự nối lại phòng và giữ trạng thái lớp.','warn');loadHttpChat();const delay=Math.min(30000,1200*Math.pow(1.8,reconnectAttempt++))+Math.random()*800;setTimeout(()=>{if(navigator.onLine&&!closing)connectRealtime()},delay)};
+    ws.onclose=()=>{wsOnline=false;if(closing)return;setConnection();loadHttpChat();const delay=Math.min(30000,1200*Math.pow(1.8,reconnectAttempt++))+Math.random()*800;setTimeout(()=>{if(navigator.onLine&&!closing)connectRealtime()},delay)};
   }
 
   function showReaction(emoji,name='Bạn'){const pop=$('#reactionPop');const x=document.createElement('div');x.innerHTML=`<span>${emoji}</span><small>${esc(name)}</small>`;pop.appendChild(x);setTimeout(()=>x.remove(),2600)}
   function emitReaction(emoji,type='reaction'){if(!Number(v13Data.settings?.allow_reactions??1)){setNotice('Reaction đang được tắt cho lớp học này.','warn');return}showReaction(emoji);if(wsOnline)ws.send(JSON.stringify(type==='raise-hand'?{type:'raise-hand'}:{type:'reaction',emoji}))}
 
-  $('#toggleMic').onclick=async()=>{try{if(!['teacher','assistant'].includes(v13Data.my_role||d.my_role)&&!Number(v13Data.settings?.allow_student_mic??1)){setNotice('Giáo viên đang khóa micro của học viên.','warn');return}if(!micTrack||micTrack.readyState!=='live')await openMic($('#micSelect').value);else{micTrack.enabled=!micTrack.enabled;if(sfuMode)await sfu?.setPublishedEnabled('mic',micTrack.enabled);else await syncAllPeers();if(wsOnline)ws.send(JSON.stringify({type:'media-state',source:'mic',enabled:micTrack.enabled}));updateUI()}}catch(e){setNotice(friendlyMediaError(e),'bad')}};
-  $('#toggleCam').onclick=async()=>{try{if(!['teacher','assistant'].includes(v13Data.my_role||d.my_role)&&!Number(v13Data.settings?.allow_student_camera??1)){setNotice('Giáo viên đang khóa camera của học viên.','warn');return}if(!camTrack||camTrack.readyState!=='live')await openCam($('#camSelect').value);else{camTrack.enabled=!camTrack.enabled;if(sfuMode)await sfu?.setPublishedEnabled('camera',camTrack.enabled);else await syncAllPeers();if(wsOnline)ws.send(JSON.stringify({type:'media-state',source:'camera',enabled:camTrack.enabled}));updateUI()}}catch(e){setNotice(friendlyMediaError(e),'bad')}};
+  $('#toggleMic').onclick=async()=>{try{if(!isHost&&!Number(v13Data.settings?.allow_student_mic??1)){setNotice('Giáo viên đang khóa micro của học viên.','warn');return}if(!micTrack||micTrack.readyState!=='live')await openMic($('#micSelect').value);else{micTrack.enabled=!micTrack.enabled;if(sfuMode)await sfu?.setPublishedEnabled('mic',micTrack.enabled);else await syncAllPeers();if(wsOnline)ws.send(JSON.stringify({type:'media-state',source:'mic',enabled:micTrack.enabled}));updateUI()}}catch(e){setNotice(friendlyMediaError(e),'bad')}};
+  $('#toggleCam').onclick=async()=>{try{if(!isHost&&!Number(v13Data.settings?.allow_student_camera??1)){setNotice('Giáo viên đang khóa camera của học viên.','warn');return}if(!camTrack||camTrack.readyState!=='live')await openCam($('#camSelect').value);else{camTrack.enabled=!camTrack.enabled;if(sfuMode)await sfu?.setPublishedEnabled('camera',camTrack.enabled);else await syncAllPeers();if(wsOnline)ws.send(JSON.stringify({type:'media-state',source:'camera',enabled:camTrack.enabled}));updateUI()}}catch(e){setNotice(friendlyMediaError(e),'bad')}};
   $('#switchCam').onclick=async()=>{try{currentFacing=currentFacing==='user'?'environment':'user';await openCam('')}catch(e){setNotice(friendlyMediaError(e),'bad')}};
-  $('#shareScreen').onclick=async()=>{if(!['teacher','assistant'].includes(v13Data.my_role||d.my_role)&&!Number(v13Data.settings?.allow_student_share??0)){setNotice('Giáo viên chưa cho phép học viên chia sẻ màn hình.','warn');return}if(!hasDisplay){setNotice('Trình duyệt này chưa hỗ trợ chia sẻ màn hình.','warn');return}try{const s=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:15,max:30}},audio:false});screenTrack=s.getVideoTracks()[0];localVideo.srcObject=new MediaStream([screenTrack]);if(sfuMode)screenPublishedMeta=await publishSfu(screenTrack,'screen');else await syncAllPeers();screenTrack.onended=async()=>{if(sfuMode){const meta=screenPublishedMeta;screenPublishedMeta=null;screenTrack=null;await sfu?.unpublish('screen');if(wsOnline&&meta)ws.send(JSON.stringify({type:'media-track-unpublished',...meta,source:'screen'}))}else{screenTrack=null;await syncAllPeers()}localVideo.srcObject=localStream;updateUI()};updateUI()}catch(e){if(e.name!=='NotAllowedError')setNotice(friendlyMediaError(e),'bad')}};
+  $('#shareScreen').onclick=async()=>{if(!isHost&&!Number(v13Data.settings?.allow_student_share??0)){setNotice('Giáo viên chưa cho phép học viên chia sẻ màn hình.','warn');return}if(!hasDisplay){setNotice('Trình duyệt này chưa hỗ trợ chia sẻ màn hình.','warn');return}try{const s=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:15,max:30}},audio:false});screenTrack=s.getVideoTracks()[0];localVideo.srcObject=new MediaStream([screenTrack]);if(sfuMode)screenPublishedMeta=await publishSfu(screenTrack,'screen');else await syncAllPeers();screenTrack.onended=async()=>{if(sfuMode){const meta=screenPublishedMeta;screenPublishedMeta=null;screenTrack=null;await sfu?.unpublish('screen');if(wsOnline&&meta)ws.send(JSON.stringify({type:'media-track-unpublished',...meta,source:'screen'}))}else{screenTrack=null;await syncAllPeers()}localVideo.srcObject=localStream;updateUI()};updateUI()}catch(e){if(e.name!=='NotAllowedError')setNotice(friendlyMediaError(e),'bad')}};
   $('#micSelect').onchange=async e=>{if(micTrack)try{await openMic(e.target.value)}catch(err){setNotice(friendlyMediaError(err),'bad')}};
   $('#camSelect').onchange=async e=>{if(camTrack)try{await openCam(e.target.value)}catch(err){setNotice(friendlyMediaError(err),'bad')}};
   $('#speakerSelect').onchange=async e=>{if(typeof localVideo.setSinkId==='function')try{await localVideo.setSinkId(e.target.value)}catch{}};
@@ -303,11 +309,18 @@ async function liveRoom(classId,guestName=null){
   const layouts=['grid','speaker','compact'];let layoutIndex=0;$('#layoutBtn').onclick=()=>{layoutIndex=(layoutIndex+1)%layouts.length;$('#stage').dataset.layout=layouts[layoutIndex];$('#layoutBtn').textContent=layouts[layoutIndex]==='grid'?'▦':layouts[layoutIndex]==='speaker'?'▣':'▤';setNotice(`Bố cục: ${layouts[layoutIndex]}.`,'good')};
   $('#themeBtn').onclick=()=>{document.querySelector('.meeting-app')?.classList.toggle('meeting-dark');$('#themeBtn').textContent=document.querySelector('.meeting-app')?.classList.contains('meeting-dark')?'☾':'☀'};
   $('#fullScreenBtn').onclick=async()=>{try{if(!document.fullscreenElement)await document.documentElement.requestFullscreen();else await document.exitFullscreen()}catch{}};
-  document.querySelectorAll('[data-panel]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-panel]').forEach(x=>x.classList.toggle('active',x===b));['chat','people','settings'].forEach(k=>$(`#panel${k[0].toUpperCase()+k.slice(1)}`).classList.toggle('hidden',b.dataset.panel!==k))});
+  const activatePanel=name=>{const panel=$('#meetingPanel');panel?.classList.remove('panel-hidden');document.querySelectorAll('[data-panel]').forEach(x=>x.classList.toggle('active',x.dataset.panel===name));document.querySelectorAll('.meeting-panel-body').forEach(x=>x.classList.add('hidden'));$(`#panel${name[0].toUpperCase()+name.slice(1)}`)?.classList.remove('hidden')};
+  document.querySelectorAll('[data-panel]').forEach(b=>b.onclick=()=>activatePanel(b.dataset.panel));
+  $('#teacherControlBtn')?.addEventListener('click',()=>activatePanel('teaching'));
+  $('#teacherDockBtn')?.addEventListener('click',()=>activatePanel('teaching'));
+  $('#openDevices')?.addEventListener('click',()=>{activatePanel('settings');$('#moreRoomMenu')?.classList.add('hidden')});
+  $('#moreRoomBtn')?.addEventListener('click',e=>{e.stopPropagation();$('#moreRoomMenu')?.classList.toggle('hidden')});
+  $('#hideSelfQuick')?.addEventListener('click',()=>{$('#confidenceHideSelf').checked=!$('#confidenceHideSelf').checked;applyConfidenceView();$('#moreRoomMenu')?.classList.add('hidden')});
+  document.addEventListener('click',e=>{if(!e.target.closest('#moreRoomMenu')&&!e.target.closest('#moreRoomBtn'))$('#moreRoomMenu')?.classList.add('hidden')});
 
   const cleanupLive=()=>{closing=true;clearInterval(chatPoll);clearInterval(sfuTrackPoll);v13?.cleanup?.();try{ws?.close(1000,'leave')}catch{};[micTrack,camTrack,screenTrack].filter(Boolean).forEach(t=>{try{t.stop()}catch{}});try{audioCtx?.close()}catch{};cancelAnimationFrame(audioRAF);peers.forEach(pc=>{try{pc.close()}catch{}});peers.clear();sfu?.close().catch(()=>{});remoteSfuStreams.forEach(x=>x.tile?.remove());remoteSfuStreams.clear()};state.liveCleanup=cleanupLive;
   const leave=()=>{cleanupLive();state.liveCleanup=null;location.hash=leaveTarget}; $('#leaveRoom').onclick=leave;$('#leaveTop').onclick=leave;
-  v13=mountClassroomV13({classId,role:v13Data.my_role||d.my_role||'student',displayName,api,settings:v13Data.settings||{},send:payload=>{if(wsOnline&&ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify(payload))},controls:{forceMute:async()=>{if(micTrack){micTrack.enabled=false;if(sfuMode)await sfu?.setPublishedEnabled('mic',false);updateUI();setNotice('Giáo viên đã tắt micro của bạn.','warn')}},forceCameraOff:async()=>{if(camTrack){camTrack.enabled=false;if(sfuMode)await sfu?.setPublishedEnabled('camera',false);updateUI();setNotice('Giáo viên đã tắt camera của bạn.','warn')}},leave}});
+  v13=mountClassroomV13({classId,role:roomRole,displayName,api,settings:v13Data.settings||{},send:payload=>{if(wsOnline&&ws?.readyState===WebSocket.OPEN)ws.send(JSON.stringify(payload))},controls:{forceMute:async()=>{if(micTrack){micTrack.enabled=false;if(sfuMode)await sfu?.setPublishedEnabled('mic',false);updateUI();setNotice('Giáo viên đã tắt micro của bạn.','warn')}},forceCameraOff:async()=>{if(camTrack){camTrack.enabled=false;if(sfuMode)await sfu?.setPublishedEnabled('camera',false);updateUI();setNotice('Giáo viên đã tắt camera của bạn.','warn')}},leave}});
   window.addEventListener('online',()=>{if(!wsOnline&&!closing)connectRealtime()},{once:true});
   navigator.mediaDevices?.addEventListener?.('devicechange',enumerateDevices);
 
