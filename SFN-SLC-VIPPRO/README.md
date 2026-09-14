@@ -1,3 +1,7 @@
+# V10.1 Pages — Setup Token Diagnostics Hotfix
+
+Bản này bổ sung chẩn đoán trực tiếp cho Cloudflare Pages khi khởi tạo hệ thống. `/api/health` chỉ trả về trạng thái boolean của binding/secret, tuyệt đối không trả giá trị secret. Nếu SETUP_TOKEN thiếu, sai, hoặc D1 chưa bind, API cài đặt trả mã lỗi riêng để biết chính xác nguyên nhân.
+
 # Trung tâm Học tập Số Sky First Network — V10 Pages Edition
 
 Phiên bản này được chuyển từ Worker-first sang **Cloudflare Pages + Pages Functions** để deploy trực tiếp bằng màn hình Pages Git Integration.

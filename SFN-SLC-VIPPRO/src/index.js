@@ -215,7 +215,7 @@ async function routeApi(request, env, ctx, url) {
   const path = url.pathname;
   const method = request.method;
 
-  if (path === '/api/health') return ok({ service:'Sky First Network Digital Learning Center', time:nowIso(), domain:env.APP_URL });
+  if (path === '/api/health') return ok({ service:'Sky First Network Digital Learning Center', version:'V10.1 Pages', time:nowIso(), domain:env.APP_URL, environment:{ setup_token_configured:!!env.SETUP_TOKEN, d1_bound:!!env.DB, r2_bound:!!env.FILES, resend_configured:!!env.RESEND_API_KEY } });
 
   if (path === '/api/setup/status' && method === 'GET') {
     const ready=await schemaReady(env);
@@ -225,13 +225,17 @@ async function routeApi(request, env, ctx, url) {
   }
 
   if (path === '/api/setup/install' && method === 'POST') {
-    if (!env.SETUP_TOKEN || request.headers.get('x-setup-token') !== env.SETUP_TOKEN) return bad('Mã thiết lập hệ thống không hợp lệ.',403);
+    if (!env.SETUP_TOKEN) return bad('SETUP_TOKEN chưa được cấu hình trong Cloudflare Pages Production. Hãy thêm Secret SETUP_TOKEN và redeploy deployment mới.',500,{code:'SETUP_TOKEN_NOT_CONFIGURED'});
+    if (request.headers.get('x-setup-token') !== env.SETUP_TOKEN) return bad('Mã thiết lập hệ thống không hợp lệ. Mã nhập trên website không trùng SETUP_TOKEN của deployment hiện tại.',403,{code:'SETUP_TOKEN_MISMATCH'});
+    if (!env.DB) return bad('Binding D1 DB chưa được cấu hình cho Cloudflare Pages Production.',500,{code:'D1_NOT_BOUND'});
     await installSchema(env);
     return ok({schema_ready:true,message:'Dữ liệu nền tảng đã được khởi tạo. Không cần chạy migration thủ công.'});
   }
 
   if (path === '/api/setup/bootstrap' && method === 'POST') {
-    if (!env.SETUP_TOKEN || request.headers.get('x-setup-token') !== env.SETUP_TOKEN) return bad('Setup token không hợp lệ.',403);
+    if (!env.SETUP_TOKEN) return bad('SETUP_TOKEN chưa được cấu hình trong Cloudflare Pages Production.',500,{code:'SETUP_TOKEN_NOT_CONFIGURED'});
+    if (request.headers.get('x-setup-token') !== env.SETUP_TOKEN) return bad('Mã thiết lập hệ thống không hợp lệ.',403,{code:'SETUP_TOKEN_MISMATCH'});
+    if (!env.DB) return bad('Binding D1 DB chưa được cấu hình cho Cloudflare Pages Production.',500,{code:'D1_NOT_BOUND'});
     const exists=await env.DB.prepare(`SELECT COUNT(*) n FROM users`).first();
     if(Number(exists.n)>0) return bad('Hệ thống đã được khởi tạo.',409);
     const body=await request.json(); const fullName=str(body.full_name)||'SFN Super Admin'; const email=normalizeEmail(str(body.email)); const password=str(body.password);
