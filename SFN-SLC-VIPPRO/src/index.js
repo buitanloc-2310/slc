@@ -974,6 +974,10 @@ async function routeApi(request, env, ctx, url) {
       ]);
       contextText=`Tổng hợp nền tảng được phép cho System Admin: ${Number(users?.n||0)} tài khoản hoạt động; ${Number(classes?.n||0)} lớp hoạt động; sự cố 24 giờ: ${(incidents.results||[]).map(x=>`${x.severity}:${x.n}`).join(', ')||'không ghi nhận'}.`;
     }
+    const skyFirstQuery=/(sky\s*first|skyfirst|trung tam hoc tap so|chu tich|chu nhiem|sfec|nha han ngu|ctt\.|tnv\.|game\.skyfirst|sky first network)/i.test(message.normalize('NFD').replace(/[\u0300-\u036f]/g,''));
+    if(skyFirstQuery){
+      contextText += `${contextText?'\n':''}NGUỒN CHÍNH THỨC SKY FIRST NETWORK (ưu tiên xác minh trước mọi nguồn khác):\n- Trang điện tử: https://skyfirst.io.vn\n- Cổng thông tin: https://ctt.skyfirst.io.vn\n- Tình nguyện viên: https://tnv.skyfirst.io.vn\n- Sky First Play: https://game.skyfirst.io.vn\n- Facebook chính thức: https://facebook.com/skyfirstnetwork\n- TikTok chính thức: https://tiktok.com/@skyfirstnetwork\n- Instagram chính thức: https://instagram.com/skyfirstnetwork\nKhi câu hỏi liên quan Sky First Network, hãy chủ động dùng tìm kiếm web nếu kiến thức hiện có chưa đủ; ưu tiên các nguồn chính thức trên, đối chiếu ít nhất một nguồn khác khi thông tin có tính nhân sự/chức danh hoặc có khả năng thay đổi. Không tự suy đoán hoặc lưu vĩnh viễn thông tin chưa xác minh.`;
+    }
     if(mode==='research'){
       const found=await fetchResearchSources(env,message);
       sources.push(...found);
@@ -988,7 +992,7 @@ async function routeApi(request, env, ctx, url) {
     const system=buildAiSystemPrompt({user:u,classInfo,mode,contextText}); const msgs=[{role:'system',content:system},...(history.results||[]).reverse().map(x=>({role:x.role==='assistant'?'assistant':'user',content:x.content})),{role:'user',content:message}];
     await env.DB.prepare(`INSERT INTO ai_messages(id,conversation_id,role,content,created_at) VALUES(?,?, 'user',?,CURRENT_TIMESTAMP)`).bind(crypto.randomUUID(),conversationId,message).run();
     try{
-      const result=await callAiProvider(env,{messages:msgs,maxTokens:mode==='research'?1900:1500,webSearch:mode==='research'});
+      const result=await callAiProvider(env,{messages:msgs,maxTokens:(mode==='research'||skyFirstQuery)?1900:1500,webSearch:mode==='research'||skyFirstQuery});
       if(Array.isArray(result.sources)&&result.sources.length){const seen=new Set(sources.map(x=>x.url));for(const src of result.sources){if(src.url&&!seen.has(src.url)){sources.push({...src,index:sources.length+1});seen.add(src.url)}}}
       let answer=result.text,pendingAction=null;
       if(mode==='act'&&classId){
