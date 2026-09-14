@@ -168,10 +168,30 @@ export async function auditAi(env,{userId=null,classId=null,mode='ask',action='c
   }catch{}
 }
 
-export function aiConfigured(env){
-  return !!(String(env?.AI_API_URL||'').trim() && String(env?.AI_API_KEY||'').trim() && String(env?.AI_MODEL||'').trim());
+export function aiProviderConfig(env){
+  const rawProvider=String(env?.AI_PROVIDER||'').trim().toLowerCase();
+  const rawUrl=String(env?.AI_API_URL||'').trim();
+  let provider=rawProvider;
+  if(!provider){
+    if(/api\.openai\.com/i.test(rawUrl)||(!rawUrl&&env?.AI_API_KEY)) provider='openai_responses';
+    else provider='openai_compatible';
+  }
+  if(provider==='openai') provider='openai_responses';
+  const isOpenAI=provider==='openai_responses';
+  const url=rawUrl||(isOpenAI?'https://api.openai.com/v1/responses':'');
+  const model=String(env?.AI_MODEL||(isOpenAI?'gpt-5.6-luna':'')).trim();
+  const timeoutMs=Math.min(60000,Math.max(5000,Number(env?.AI_TIMEOUT_MS||30000)));
+  const nativeWebSearch=isOpenAI && String(env?.AI_ENABLE_WEB_SEARCH??'1')!=='0';
+  return {provider,url,model,timeoutMs,nativeWebSearch,configured:!!(url&&model&&String(env?.AI_API_KEY||'').trim())};
 }
 
+export function aiConfigured(env){
+  return aiProviderConfig(env).configured;
+}
+
+export function aiSupportsNativeResearch(env){
+  const c=aiProviderConfig(env); return c.configured&&c.nativeWebSearch;
+}
 
 export async function consumeAiQuota(env,userId,{limit=40,windowMinutes=10}={}){
   await ensureVPlusSchema(env);
@@ -190,7 +210,7 @@ export async function fetchResearchSources(env,query){
   try{
     const headers={'content-type':'application/json'};
     if(env.AI_RESEARCH_API_KEY) headers.authorization=`Bearer ${env.AI_RESEARCH_API_KEY}`;
-    const r=await fetch(endpoint,{method:'POST',headers,body:JSON.stringify({query:String(query).slice(0,1000),limit:6})});
+    const r=await fetch(endpoint,{method:'POST',headers,body:JSON.stringify({query:String(query).slice(0,1000),limit:6}),signal:AbortSignal.timeout(12000)});
     if(!r.ok)return [];
     const data=await r.json();
     const arr=Array.isArray(data)?data:(data.results||data.items||data.web?.results||[]);
@@ -210,15 +230,51 @@ export function parseAiAction(text=''){
   }catch{return null}
 }
 
-export async function callAiProvider(env,{messages,temperature=.35,maxTokens=1200}={}){
-  if(!aiConfigured(env)) throw Object.assign(new Error('AI_NOT_READY'),{status:503,publicMessage:'Sky First AI đang được chuẩn bị. Vui lòng quay lại sau.'});
-  const base=String(env.AI_API_URL).replace(/\/+$/,'');
-  const r=await fetch(base,{method:'POST',headers:{'authorization':`Bearer ${env.AI_API_KEY}`,'content-type':'application/json'},body:JSON.stringify({model:env.AI_MODEL,messages,temperature,max_tokens:maxTokens})});
-  if(!r.ok) throw Object.assign(new Error('AI_PROVIDER_FAILED'),{status:503,publicMessage:'Sky First AI tạm thời chưa thể phản hồi. Vui lòng thử lại sau.'});
-  const data=await r.json();
-  const text=String(data?.choices?.[0]?.message?.content ?? data?.output_text ?? data?.response ?? '').trim();
+function extractOpenAIResponseText(data){
+  if(typeof data?.output_text==='string'&&data.output_text.trim()) return data.output_text.trim();
+  const parts=[];
+  for(const item of Array.isArray(data?.output)?data.output:[]){
+    for(const c of Array.isArray(item?.content)?item.content:[]){
+      if((c?.type==='output_text'||c?.type==='text')&&typeof c?.text==='string') parts.push(c.text);
+    }
+  }
+  return parts.join('\n').trim();
+}
+
+function extractOpenAIResponseSources(data){
+  const found=[]; const seen=new Set();
+  const add=(a)=>{const url=String(a?.url||'').trim();if(!/^https?:\/\//i.test(url)||seen.has(url))return;seen.add(url);found.push({title:String(a?.title||new URL(url).hostname).slice(0,180),url:url.slice(0,1200),snippet:''})};
+  for(const item of Array.isArray(data?.output)?data.output:[]){
+    for(const c of Array.isArray(item?.content)?item.content:[]){
+      for(const a of Array.isArray(c?.annotations)?c.annotations:[]){if(a?.type==='url_citation'||a?.url)add(a)}
+    }
+  }
+  return found.slice(0,8).map((x,i)=>({index:i+1,...x}));
+}
+
+export async function callAiProvider(env,{messages,temperature=.35,maxTokens=1200,webSearch=false}={}){
+  const cfg=aiProviderConfig(env);
+  if(!cfg.configured) throw Object.assign(new Error('AI_NOT_READY'),{status:503,publicMessage:'Sky First AI đang được chuẩn bị. Vui lòng quay lại sau.'});
+  const headers={'authorization':`Bearer ${env.AI_API_KEY}`,'content-type':'application/json'};
+  let body;
+  if(cfg.provider==='openai_responses'){
+    body={
+      model:cfg.model,
+      input:(Array.isArray(messages)?messages:[]).map(m=>({role:m.role==='system'?'developer':(m.role||'user'),content:String(m.content||'')})),
+      max_output_tokens:maxTokens
+    };
+    if(webSearch&&cfg.nativeWebSearch) body.tools=[{type:'web_search'}];
+  }else{
+    body={model:cfg.model,messages,temperature,max_tokens:maxTokens};
+  }
+  let r;
+  try{r=await fetch(cfg.url,{method:'POST',headers,body:JSON.stringify(body),signal:AbortSignal.timeout(cfg.timeoutMs)})}
+  catch(e){throw Object.assign(new Error(e?.name==='TimeoutError'?'AI_PROVIDER_TIMEOUT':'AI_PROVIDER_NETWORK'),{status:503,publicMessage:'Sky First AI đang mất nhiều thời gian hơn bình thường. Vui lòng thử lại sau.',internalDetail:String(e?.message||e)})}
+  if(!r.ok){let detail='';try{detail=(await r.text()).slice(0,1200)}catch{};throw Object.assign(new Error('AI_PROVIDER_FAILED'),{status:503,providerStatus:r.status,internalDetail:detail,publicMessage:'Sky First AI tạm thời chưa thể phản hồi. Vui lòng thử lại sau.'})}
+  let data;try{data=await r.json()}catch{throw Object.assign(new Error('AI_PROVIDER_INVALID_JSON'),{status:503,publicMessage:'Sky First AI tạm thời chưa thể phản hồi. Vui lòng thử lại sau.'})}
+  const text=cfg.provider==='openai_responses'?extractOpenAIResponseText(data):String(data?.choices?.[0]?.message?.content ?? data?.output_text ?? data?.response ?? '').trim();
   if(!text) throw Object.assign(new Error('AI_EMPTY'),{status:503,publicMessage:'Sky First AI chưa thể tạo câu trả lời lúc này. Vui lòng thử lại.'});
-  return {text,providerId:String(data?.id||'')};
+  return {text,providerId:String(data?.id||''),sources:cfg.provider==='openai_responses'?extractOpenAIResponseSources(data):[],provider:cfg.provider,model:cfg.model};
 }
 
 export function buildAiSystemPrompt({user,classInfo=null,mode='ask',contextText=''}={}){

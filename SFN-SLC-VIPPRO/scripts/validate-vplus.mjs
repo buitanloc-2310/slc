@@ -32,20 +32,23 @@ for(const secret of ['REALTIME_APP_SECRET','AI_API_KEY','AI_RESEARCH_API_KEY']) 
 }
 
 const app=read('public/app.js');
+app.includes("import('/ai/vplus-ai.js')")?pass('AI client is lazy-loaded'):fail('AI client lazy-load missing');
+app.includes("import('/classroom/media-client.js')")?pass('media client is lazy-loaded'):fail('media client lazy-load missing');
+app.includes("if(!wsOnline&&!document.hidden)loadHttpChat()")?pass('HTTP chat polling is fallback-only'):fail('chat polling optimization missing');
 app.includes("state.user.role==='super_admin'?'<button class=\"btn\" data-admin-tab=\"system\"")
   ? pass('system tab is super-admin gated') : fail('system tab super-admin gate not found');
 app.includes("state.user?.role!=='super_admin') document.querySelector('#adm-system')?.remove()")
   ? pass('system pane removed for non-system-admin') : fail('system pane removal gate not found');
 
 const server=read('src/index.js');
-for(const route of ['/api/admin/system/diagnostics','/api/admin/system/live-metrics']) {
+for(const route of ['/api/admin/system/diagnostics','/api/admin/system/live-metrics','/api/admin/ai/status','/api/admin/ai/test']) {
   server.includes(route)?pass(`system endpoint exists: ${route}`):fail(`system endpoint missing: ${route}`);
 }
 if(/path === '\/api\/health'[\s\S]{0,180}service:'Sky First School', status:'available'/.test(server)) pass('public health endpoint is minimal');
 else fail('public health endpoint is not minimal as expected');
 
 const ai=read('src/vplus-platform.js');
-for(const token of ['hasPermission','requirePermission','consumeAiQuota','auditAi','fetchResearchSources'])
+for(const token of ['hasPermission','requirePermission','consumeAiQuota','auditAi','fetchResearchSources','aiProviderConfig','aiSupportsNativeResearch','openai_responses','web_search'])
   ai.includes(token)?pass(`AI guard present: ${token}`):fail(`AI guard missing: ${token}`);
 
 // Resolve static relative imports and /public imports in JS modules.

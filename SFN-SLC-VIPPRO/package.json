@@ -1,6 +1,6 @@
 {
   "name": "sfn-slc",
-  "version": "20.0.0-vplus",
+  "version": "20.1.0-vplus-ai-ready",
   "private": true,
   "type": "module",
   "scripts": {
