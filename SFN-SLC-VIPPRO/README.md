@@ -1,21 +1,16 @@
-# V10.1 Pages — Setup Token Diagnostics Hotfix
+# Trung tâm Học tập Số Sky First Network — V11 Pages Fresh Rebuild
 
-Bản này bổ sung chẩn đoán trực tiếp cho Cloudflare Pages khi khởi tạo hệ thống. `/api/health` chỉ trả về trạng thái boolean của binding/secret, tuyệt đối không trả giá trị secret. Nếu SETUP_TOKEN thiếu, sai, hoặc D1 chưa bind, API cài đặt trả mã lỗi riêng để biết chính xác nguyên nhân.
+V11 sử dụng installer D1 mới hoàn toàn theo cơ chế **one statement at a time** dành cho Cloudflare Pages Functions. Không còn dùng installer `DB.exec()` của V10.x.
 
-# Trung tâm Học tập Số Sky First Network — V10 Pages Edition
+- Public website + SFN account
+- Account request / tracking / activation email
+- Classes, materials, assignments, exams, support
+- Admin Control Center
+- D1 metadata + R2 files
+- Giới hạn tối đa 10.000 tài khoản SFN
+- Cài schema trực tiếp từ website bằng `SETUP_TOKEN`
 
-Phiên bản này được chuyển từ Worker-first sang **Cloudflare Pages + Pages Functions** để deploy trực tiếp bằng màn hình Pages Git Integration.
-
-## Kiến trúc
-
-- `public/` — giao diện web.
-- `functions/api/[[path]].js` — gateway Pages Functions cho toàn bộ `/api/*`.
-- `src/index.js` — lõi API V10 dùng chung.
-- D1 `DB` — dữ liệu quan hệ và cấu hình.
-- R2 `FILES` — tệp, học liệu, ảnh xác minh và bài nộp.
-- `migrations/` — schema và migration dự phòng.
-
-## Build
+## Deploy Pages
 
 ```text
 Framework preset: None
@@ -24,18 +19,7 @@ Build output directory: public
 Root directory: SFN-SLC-VIPPRO
 ```
 
-## Chức năng V10 giữ nguyên
+Sau deploy, kiểm tra `/api/health` và `/api/setup/installer-info` trước khi bấm cài dữ liệu.
 
-Tài khoản SFN, giới hạn 10.000 tài khoản, yêu cầu cấp tài khoản, tra cứu, khởi tạo Super Admin, Control Center, phân quyền, lớp học, thành viên lớp, thông báo, học liệu R2, bài tập, bài nộp/chấm điểm, kiểm tra, chế độ thi, ticket hỗ trợ, CMS, email template, chính sách, nhật ký quản trị, incident log, chẩn đoán hệ thống và các cơ chế hardening của V10.
+Xem `V11-FRESH-REBUILD.md` để biết cơ chế installer mới.
 
-## Realtime
-
-Cloudflare Pages không thể tự tạo Durable Object trong cùng Pages project. Source đã xử lý thiếu binding an toàn: các phần còn lại vẫn chạy; endpoint realtime trả 503 có mã `LIVE_SIGNALING_NOT_BOUND` cho đến khi binding Durable Object/Service được thêm.
-
-Xem `PAGES-SETUP.md` để triển khai.
-
-
-## V10.3 Pages D1 Installer Fix
-- Sửa lỗi `PRAGMA foreign_keys = ON;` làm `/api/setup/install` trả `D1_EXEC_ERROR: incomplete input` trên Cloudflare Pages Functions.
-- Installer tự loại bỏ PRAGMA `foreign_keys` trước khi gửi schema vào D1.
-- Có thể chạy lại an toàn sau lần cài dở vì schema sử dụng `IF NOT EXISTS`/`INSERT OR IGNORE`.

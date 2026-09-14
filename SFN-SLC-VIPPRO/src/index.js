@@ -1,107 +1,11 @@
 import { LiveRoom } from './live-room.js';
+import { V11_SCHEMA_STAGES } from './schema-v11.js';
 export { LiveRoom };
 
 const SECURITY_HEADERS = {'x-content-type-options':'nosniff','referrer-policy':'strict-origin-when-cross-origin','x-frame-options':'SAMEORIGIN','permissions-policy':'camera=(self), microphone=(self), display-capture=(self), geolocation=()','cross-origin-opener-policy':'same-origin-allow-popups'};
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8', 'cache-control':'no-store', ...SECURITY_HEADERS };
 const COOKIE = 'sfn_slc_session';
 const MAX_ACCOUNTS = 10000;
-const AUTO_SCHEMA_SQL = "\n\nCREATE TABLE IF NOT EXISTS counters (\n  key TEXT PRIMARY KEY,\n  value INTEGER NOT NULL DEFAULT 0\n);\nINSERT OR IGNORE INTO counters(key,value) VALUES('sfn_user',0);\n\nCREATE TABLE IF NOT EXISTS users (\n  id TEXT PRIMARY KEY,\n  sfn_no INTEGER NOT NULL UNIQUE CHECK(sfn_no BETWEEN 1 AND 10000),\n  sfn_id TEXT NOT NULL UNIQUE,\n  full_name TEXT NOT NULL,\n  email TEXT NOT NULL UNIQUE,\n  phone TEXT NOT NULL DEFAULT '',\n  role TEXT NOT NULL DEFAULT 'student',\n  status TEXT NOT NULL DEFAULT 'pending_activation',\n  avatar_key TEXT,\n  profile_json TEXT NOT NULL DEFAULT '{}',\n  password_hash TEXT NOT NULL DEFAULT '',\n  password_salt TEXT NOT NULL DEFAULT '',\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n);\nCREATE INDEX IF NOT EXISTS idx_users_email ON users(email);\nCREATE INDEX IF NOT EXISTS idx_users_role ON users(role,status);\nCREATE TRIGGER IF NOT EXISTS trg_users_max_10000\nBEFORE INSERT ON users\nWHEN (SELECT COUNT(*) FROM users) >= 10000\nBEGIN\n  SELECT RAISE(ABORT, 'SFN_ACCOUNT_LIMIT_10000');\nEND;\n\nCREATE TABLE IF NOT EXISTS account_requests (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  request_code TEXT NOT NULL UNIQUE,\n  full_name TEXT NOT NULL,\n  email TEXT NOT NULL,\n  phone TEXT NOT NULL,\n  data_json TEXT NOT NULL DEFAULT '{}',\n  portrait_key TEXT NOT NULL,\n  student_card_key TEXT,\n  status TEXT NOT NULL DEFAULT 'pending',\n  reviewed_by TEXT,\n  reviewed_at TEXT,\n  approved_user_id TEXT,\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n);\nCREATE INDEX IF NOT EXISTS idx_account_requests_status ON account_requests(status,created_at DESC);\n\nCREATE TABLE IF NOT EXISTS activation_tokens (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  token TEXT NOT NULL UNIQUE,\n  user_id TEXT NOT NULL,\n  expires_at TEXT NOT NULL,\n  used_at TEXT,\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE\n);\n\nCREATE TABLE IF NOT EXISTS sessions (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  token TEXT NOT NULL UNIQUE,\n  user_id TEXT NOT NULL,\n  ip_hash TEXT NOT NULL DEFAULT '',\n  user_agent TEXT NOT NULL DEFAULT '',\n  expires_at TEXT NOT NULL,\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE\n);\nCREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id,expires_at DESC);\n\nCREATE TABLE IF NOT EXISTS files (\n  id TEXT PRIMARY KEY,\n  owner_user_id TEXT,\n  r2_key TEXT NOT NULL UNIQUE,\n  name TEXT NOT NULL,\n  mime TEXT NOT NULL DEFAULT '',\n  size INTEGER NOT NULL DEFAULT 0,\n  visibility TEXT NOT NULL DEFAULT 'private',\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE SET NULL\n);\nCREATE INDEX IF NOT EXISTS idx_files_owner ON files(owner_user_id,created_at DESC);\n\nCREATE TABLE IF NOT EXISTS classes (\n  id TEXT PRIMARY KEY,\n  name TEXT NOT NULL,\n  description TEXT NOT NULL DEFAULT '',\n  unit TEXT NOT NULL DEFAULT '',\n  cover_key TEXT,\n  join_code TEXT NOT NULL UNIQUE,\n  owner_user_id TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'active',\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE RESTRICT\n);\n\nCREATE TABLE IF NOT EXISTS class_members (\n  class_id TEXT NOT NULL,\n  user_id TEXT NOT NULL,\n  role TEXT NOT NULL DEFAULT 'student',\n  status TEXT NOT NULL DEFAULT 'active',\n  joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  PRIMARY KEY(class_id,user_id),\n  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,\n  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE\n);\nCREATE INDEX IF NOT EXISTS idx_class_members_user ON class_members(user_id,status);\n\nCREATE TABLE IF NOT EXISTS class_posts (\n  id TEXT PRIMARY KEY,\n  class_id TEXT NOT NULL,\n  author_user_id TEXT NOT NULL,\n  body TEXT NOT NULL,\n  pinned INTEGER NOT NULL DEFAULT 0,\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,\n  FOREIGN KEY(author_user_id) REFERENCES users(id) ON DELETE CASCADE\n);\n\nCREATE TABLE IF NOT EXISTS materials (\n  id TEXT PRIMARY KEY,\n  class_id TEXT NOT NULL,\n  file_id TEXT NOT NULL,\n  title TEXT NOT NULL,\n  description TEXT NOT NULL DEFAULT '',\n  created_by TEXT NOT NULL,\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,\n  FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE,\n  FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE RESTRICT\n);\n\nCREATE TABLE IF NOT EXISTS assignments (\n  id TEXT PRIMARY KEY,\n  class_id TEXT NOT NULL,\n  type TEXT NOT NULL DEFAULT 'assignment',\n  title TEXT NOT NULL,\n  instructions TEXT NOT NULL DEFAULT '',\n  due_at TEXT,\n  points REAL NOT NULL DEFAULT 10,\n  created_by TEXT NOT NULL,\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,\n  FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE RESTRICT\n);\n\nCREATE TABLE IF NOT EXISTS submissions (\n  id TEXT PRIMARY KEY,\n  assignment_id TEXT NOT NULL,\n  user_id TEXT NOT NULL,\n  text_answer TEXT NOT NULL DEFAULT '',\n  file_id TEXT,\n  status TEXT NOT NULL DEFAULT 'submitted',\n  score REAL,\n  feedback TEXT,\n  submitted_at TEXT,\n  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  UNIQUE(assignment_id,user_id),\n  FOREIGN KEY(assignment_id) REFERENCES assignments(id) ON DELETE CASCADE,\n  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,\n  FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE SET NULL\n);\n\nCREATE TABLE IF NOT EXISTS exams (\n  id TEXT PRIMARY KEY,\n  class_id TEXT NOT NULL,\n  title TEXT NOT NULL,\n  instructions TEXT NOT NULL DEFAULT '',\n  duration_minutes INTEGER NOT NULL DEFAULT 30,\n  strict_mode INTEGER NOT NULL DEFAULT 0,\n  question_json TEXT NOT NULL DEFAULT '[]',\n  status TEXT NOT NULL DEFAULT 'draft',\n  created_by TEXT NOT NULL,\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,\n  FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE RESTRICT\n);\n\nCREATE TABLE IF NOT EXISTS exam_attempts (\n  id TEXT PRIMARY KEY,\n  exam_id TEXT NOT NULL,\n  user_id TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'in_progress',\n  started_at TEXT,\n  last_saved_at TEXT,\n  submitted_at TEXT,\n  answers_json TEXT NOT NULL DEFAULT '{}',\n  event_log_json TEXT NOT NULL DEFAULT '[]',\n  score REAL,\n  max_score REAL,\n  FOREIGN KEY(exam_id) REFERENCES exams(id) ON DELETE CASCADE,\n  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE\n);\nCREATE INDEX IF NOT EXISTS idx_exam_attempts_user ON exam_attempts(user_id,status,started_at DESC);\n\nCREATE TABLE IF NOT EXISTS live_sessions (\n  id TEXT PRIMARY KEY,\n  class_id TEXT NOT NULL,\n  title TEXT NOT NULL,\n  room_code TEXT NOT NULL UNIQUE,\n  started_by TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'scheduled',\n  scheduled_at TEXT,\n  started_at TEXT,\n  ended_at TEXT,\n  settings_json TEXT NOT NULL DEFAULT '{}',\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,\n  FOREIGN KEY(started_by) REFERENCES users(id) ON DELETE RESTRICT\n);\n\nCREATE TABLE IF NOT EXISTS attendance (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  live_session_id TEXT NOT NULL,\n  user_id TEXT,\n  guest_name TEXT,\n  joined_at TEXT NOT NULL,\n  left_at TEXT,\n  seconds_present INTEGER NOT NULL DEFAULT 0,\n  status TEXT NOT NULL DEFAULT 'present',\n  FOREIGN KEY(live_session_id) REFERENCES live_sessions(id) ON DELETE CASCADE,\n  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL\n);\n\nCREATE TABLE IF NOT EXISTS support_tickets (\n  id TEXT PRIMARY KEY,\n  ticket_code TEXT NOT NULL UNIQUE,\n  requester_user_id TEXT NOT NULL,\n  category TEXT NOT NULL DEFAULT 'other',\n  subject TEXT NOT NULL,\n  message TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'new',\n  assigned_to TEXT,\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(requester_user_id) REFERENCES users(id) ON DELETE CASCADE,\n  FOREIGN KEY(assigned_to) REFERENCES users(id) ON DELETE SET NULL\n);\n\nCREATE TABLE IF NOT EXISTS audit_logs (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  actor_user_id TEXT,\n  action TEXT NOT NULL,\n  entity_type TEXT,\n  entity_id TEXT,\n  data_json TEXT NOT NULL DEFAULT '{}',\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE SET NULL\n);\n\nCREATE TABLE IF NOT EXISTS policies (\n  key TEXT PRIMARY KEY,\n  title TEXT NOT NULL,\n  body_html TEXT NOT NULL,\n  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n);\n\nINSERT OR IGNORE INTO policies(key,title,body_html) VALUES\n('privacy','Ch\u00ednh s\u00e1ch quy\u1ec1n ri\u00eang t\u01b0','<h2>Quy\u1ec1n ri\u00eang t\u01b0 t\u1ea1i SLC</h2><p>SLC ch\u1ec9 thu th\u1eadp d\u1eef li\u1ec7u c\u1ea7n thi\u1ebft \u0111\u1ec3 v\u1eadn h\u00e0nh t\u00e0i kho\u1ea3n, l\u1edbp h\u1ecdc v\u00e0 h\u1ed7 tr\u1ee3. \u1ea2nh x\u00e1c minh, b\u00e0i n\u1ed9p v\u00e0 d\u1eef li\u1ec7u ri\u00eang t\u01b0 kh\u00f4ng \u0111\u01b0\u1ee3c c\u00f4ng khai m\u1eb7c \u0111\u1ecbnh.</p>'),\n('security','Ch\u00ednh s\u00e1ch b\u1ea3o m\u1eadt','<h2>B\u1ea3o m\u1eadt t\u00e0i kho\u1ea3n</h2><p>Kh\u00f4ng chia s\u1ebb m\u1eadt kh\u1ea9u ho\u1eb7c m\u00e3 k\u00edch ho\u1ea1t. H\u1ec7 th\u1ed1ng ghi nh\u1eadn phi\u00ean \u0111\u0103ng nh\u1eadp \u0111\u1ec3 h\u1ed7 tr\u1ee3 b\u1ea3o v\u1ec7 t\u00e0i kho\u1ea3n.</p>'),\n('terms','\u0110i\u1ec1u kho\u1ea3n s\u1eed d\u1ee5ng','<h2>\u0110i\u1ec1u kho\u1ea3n s\u1eed d\u1ee5ng</h2><p>Ng\u01b0\u1eddi d\u00f9ng c\u00f3 tr\u00e1ch nhi\u1ec7m s\u1eed d\u1ee5ng SLC \u0111\u00fang m\u1ee5c \u0111\u00edch h\u1ecdc t\u1eadp, c\u1ed9ng \u0111\u1ed3ng v\u00e0 quy \u0111\u1ecbnh c\u1ee7a Sky First Network.</p>');\n\nCREATE TABLE IF NOT EXISTS learning_units (\n  id TEXT PRIMARY KEY,\n  class_id TEXT NOT NULL,\n  title TEXT NOT NULL,\n  position INTEGER NOT NULL DEFAULT 0,\n  status TEXT NOT NULL DEFAULT 'published',\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE\n);\nCREATE TABLE IF NOT EXISTS lessons (\n  id TEXT PRIMARY KEY,\n  unit_id TEXT NOT NULL,\n  title TEXT NOT NULL,\n  body_html TEXT NOT NULL DEFAULT '',\n  source_material_id TEXT,\n  position INTEGER NOT NULL DEFAULT 0,\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(unit_id) REFERENCES learning_units(id) ON DELETE CASCADE,\n  FOREIGN KEY(source_material_id) REFERENCES materials(id) ON DELETE SET NULL\n);\nCREATE TABLE IF NOT EXISTS lesson_progress (\n  lesson_id TEXT NOT NULL,\n  user_id TEXT NOT NULL,\n  progress_percent INTEGER NOT NULL DEFAULT 0,\n  completed_at TEXT,\n  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  PRIMARY KEY(lesson_id,user_id),\n  FOREIGN KEY(lesson_id) REFERENCES lessons(id) ON DELETE CASCADE,\n  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE\n);\nCREATE TABLE IF NOT EXISTS quizzes (\n  id TEXT PRIMARY KEY,\n  class_id TEXT NOT NULL,\n  source_material_id TEXT,\n  title TEXT NOT NULL,\n  questions_json TEXT NOT NULL DEFAULT '[]',\n  status TEXT NOT NULL DEFAULT 'draft',\n  created_by TEXT NOT NULL,\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,\n  FOREIGN KEY(source_material_id) REFERENCES materials(id) ON DELETE SET NULL,\n  FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE RESTRICT\n);\n\n\n\nCREATE TABLE IF NOT EXISTS email_logs (\n  id TEXT PRIMARY KEY,\n  to_email TEXT NOT NULL,\n  subject TEXT NOT NULL,\n  status TEXT NOT NULL,\n  provider_message_id TEXT NOT NULL DEFAULT '',\n  error TEXT NOT NULL DEFAULT '',\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n);\nCREATE INDEX IF NOT EXISTS idx_email_logs_to_created\nON email_logs(to_email, created_at DESC);\nCREATE INDEX IF NOT EXISTS idx_email_logs_status_created\nON email_logs(status, created_at DESC);\n\n\n\nCREATE TABLE IF NOT EXISTS system_settings (\n  key TEXT PRIMARY KEY,\n  value TEXT NOT NULL DEFAULT '',\n  updated_by TEXT,\n  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n);\n\nINSERT OR IGNORE INTO system_settings(key,value) VALUES\n('public_intro_title','M\u1ed9t kh\u00f4ng gian h\u1ecdc t\u1eadp s\u1ed1 \u0111\u01b0\u1ee3c x\u00e2y d\u1ef1ng \u0111\u1ec3 \u0111\u1ed3ng h\u00e0nh l\u00e2u d\u00e0i.'),\n('public_intro_text','Trung t\u00e2m H\u1ecdc t\u1eadp S\u1ed1 Sky First Network k\u1ebft n\u1ed1i l\u1edbp h\u1ecdc, h\u1ecdc li\u1ec7u, ho\u1ea1t \u0111\u1ed9ng tr\u1ef1c tuy\u1ebfn, b\u00e0i t\u1eadp, ki\u1ec3m tra v\u00e0 h\u1ed7 tr\u1ee3 trong m\u1ed9t h\u00e0nh tr\u00ecnh th\u1ed1ng nh\u1ea5t.'),\n('support_email','support@skyfirst.io.vn'),\n('system_email','slc@skyfirst.io.vn'),\n('account_request_enabled','1'),\n('maintenance_mode','0'),\n('maintenance_message','H\u1ec7 th\u1ed1ng \u0111ang \u0111\u01b0\u1ee3c b\u1ea3o tr\u00ec. Vui l\u00f2ng quay l\u1ea1i sau.'),\n('default_session_days','30');\n\nCREATE TABLE IF NOT EXISTS announcements (\n  id TEXT PRIMARY KEY,\n  title TEXT NOT NULL,\n  body TEXT NOT NULL,\n  audience TEXT NOT NULL DEFAULT 'all',\n  status TEXT NOT NULL DEFAULT 'draft',\n  starts_at TEXT,\n  ends_at TEXT,\n  created_by TEXT,\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL\n);\nCREATE INDEX IF NOT EXISTS idx_announcements_status ON announcements(status,created_at DESC);\n\nCREATE TABLE IF NOT EXISTS email_templates (\n  key TEXT PRIMARY KEY,\n  subject TEXT NOT NULL,\n  body_html TEXT NOT NULL,\n  enabled INTEGER NOT NULL DEFAULT 1,\n  updated_by TEXT,\n  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n);\n\nINSERT OR IGNORE INTO email_templates(key,subject,body_html) VALUES\n('account_request_received','[Sky First] X\u00e1c nh\u1eadn ti\u1ebfp nh\u1eadn y\u00eau c\u1ea7u c\u1ea5p t\u00e0i kho\u1ea3n',''),\n('account_approved','[Sky First] K\u00edch ho\u1ea1t t\u00e0i kho\u1ea3n SFN',''),\n('account_needs_info','[Sky First] Y\u00eau c\u1ea7u b\u1ed5 sung th\u00f4ng tin',''),\n('account_rejected','[Sky First] K\u1ebft qu\u1ea3 y\u00eau c\u1ea7u c\u1ea5p t\u00e0i kho\u1ea3n','');\n\nCREATE TABLE IF NOT EXISTS admin_activity (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  actor_user_id TEXT,\n  action TEXT NOT NULL,\n  detail_json TEXT NOT NULL DEFAULT '{}',\n  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE SET NULL\n);\nCREATE INDEX IF NOT EXISTS idx_admin_activity_created ON admin_activity(created_at DESC);\n";
-
-
-const EXTRA_V9_SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS notification_center (
-  id TEXT PRIMARY KEY, user_id TEXT, title TEXT NOT NULL, body TEXT NOT NULL,
-  type TEXT NOT NULL DEFAULT 'info', link TEXT NOT NULL DEFAULT '', is_read INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_notification_center_user ON notification_center(user_id,is_read,created_at DESC);
-CREATE TABLE IF NOT EXISTS admin_notes (
-  id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, note TEXT NOT NULL,
-  created_by TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
-);
-CREATE INDEX IF NOT EXISTS idx_admin_notes_entity ON admin_notes(entity_type,entity_id,created_at DESC);
-CREATE TABLE IF NOT EXISTS system_jobs (
-  id TEXT PRIMARY KEY, job_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', detail_json TEXT NOT NULL DEFAULT '{}',
-  created_by TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, finished_at TEXT,
-  FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
-);
-INSERT OR IGNORE INTO system_settings(key,value) VALUES
-('site_name','Trung tâm Học tập Số Sky First Network'),
-('site_name_en','Sky First Network Digital Learning Center'),
-('public_about_title','Không gian học tập số cho hành trình phát triển dài hạn.'),
-('public_about_text','Trung tâm Học tập Số Sky First Network được xây dựng như một không gian học tập và vận hành thống nhất, nơi người học có thể tham gia lớp, tiếp cận học liệu, làm bài tập, kiểm tra, học trực tuyến và nhận hỗ trợ trong cùng một hệ thống.'),
-('allow_guest_live','1'),
-('default_class_unit','Sky First Network'),
-('footer_product_text','Một sản phẩm thuộc hệ sinh thái Sky First Network.'),
-('footer_copyright','© 2026 Sky First Network. Mọi quyền được bảo lưu.');`;
-
-
-const EXTRA_V10_SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS login_throttle (
-  key TEXT PRIMARY KEY,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  window_started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  blocked_until TEXT,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS live_access_tokens (
-  token TEXT PRIMARY KEY,
-  class_id TEXT NOT NULL,
-  user_id TEXT,
-  guest_name TEXT NOT NULL DEFAULT '',
-  role TEXT NOT NULL DEFAULT 'guest',
-  expires_at TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_live_access_tokens_class ON live_access_tokens(class_id,expires_at);
-CREATE TABLE IF NOT EXISTS class_messages (
-  id TEXT PRIMARY KEY,
-  class_id TEXT NOT NULL,
-  user_id TEXT NOT NULL,
-  body TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  edited_at TEXT,
-  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_class_messages_class ON class_messages(class_id,created_at DESC);
-CREATE TABLE IF NOT EXISTS class_events (
-  id TEXT PRIMARY KEY,
-  class_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  details TEXT NOT NULL DEFAULT '',
-  event_type TEXT NOT NULL DEFAULT 'class',
-  starts_at TEXT NOT NULL,
-  ends_at TEXT,
-  created_by TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,
-  FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE RESTRICT
-);
-CREATE INDEX IF NOT EXISTS idx_class_events_class ON class_events(class_id,starts_at);
-CREATE TABLE IF NOT EXISTS system_incidents (
-  id TEXT PRIMARY KEY,
-  severity TEXT NOT NULL DEFAULT 'info',
-  component TEXT NOT NULL,
-  message TEXT NOT NULL,
-  detail_json TEXT NOT NULL DEFAULT '{}',
-  resolved_at TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_system_incidents_created ON system_incidents(created_at DESC);
-INSERT OR IGNORE INTO system_settings(key,value) VALUES
-('platform_version','V10'),
-('login_rate_limit','10'),
-('max_upload_mb','50'),
-('account_portrait_max_mb','5'),
-('account_document_max_mb','10'),
-('public_status_text','Hệ thống đang hoạt động ổn định.'),
-('live_mesh_max_peers','18');`;
-
 function json(data, status = 200, extra = {}) { return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extra } }); }
 function bad(message, status = 400, detail = undefined) { return json({ ok: false, message, detail }, status); }
 function ok(data = {}) { return json({ ok: true, ...data }); }
@@ -197,37 +101,65 @@ async function schemaReady(env){
   try { await env.DB.prepare(`SELECT 1 ok FROM users LIMIT 1`).first(); await env.DB.prepare(`SELECT 1 ok FROM system_settings LIMIT 1`).first(); return true; }
   catch { return false; }
 }
-function normalizeD1SchemaSql(sql=''){
-  // Cloudflare D1 already enforces foreign keys. Executing // through Pages Functions can fail with `incomplete input`, so remove it.
-  return String(sql)
-    .replace(/^\s*PRAGMA\s+foreign_keys\s*=\s*(?:ON|OFF)\s*;?\s*$/gim, '')
-    .replace(/^\s*PRAGMA\s+foreign_keys\s*;?\s*$/gim, '')
-    .trim();
+function compactSqlLabel(sql=''){
+  return String(sql).replace(/\s+/g,' ').trim().slice(0,220);
 }
-async function installSchema(env){
-  const stages = [
-    ['core_schema', AUTO_SCHEMA_SQL],
-    ['v9_schema', EXTRA_V9_SCHEMA_SQL],
-    ['v10_schema', EXTRA_V10_SCHEMA_SQL]
-  ];
+
+async function runSchemaStage(env, stage){
   const completed=[];
-  for (const [stage, rawSql] of stages) {
-    const sql=normalizeD1SchemaSql(rawSql);
-    if(!sql){ completed.push(stage); continue; }
-    try {
-      await env.DB.exec(sql);
-      completed.push(stage);
-    } catch (error) {
-      const e=new Error(error?.message || String(error) || 'D1 schema installation failed');
-      e.code='SETUP_SCHEMA_STAGE_FAILED';
-      e.stage=stage;
-      e.completed=completed;
+  for(let i=0;i<stage.statements.length;i++){
+    const sql=stage.statements[i];
+    try{
+      // Pages + D1: execute exactly one complete SQLite statement at a time.
+      // We intentionally do NOT use D1Database.exec() for the installer.
+      await env.DB.prepare(sql).run();
+      completed.push(i+1);
+    }catch(error){
+      const e=new Error(error?.message || String(error) || 'D1 statement failed');
+      e.code='SETUP_SCHEMA_STATEMENT_FAILED';
+      e.stage=stage.name;
+      e.statement_index=i+1;
+      e.statement_total=stage.statements.length;
+      e.statement_preview=compactSqlLabel(sql);
       e.causeText=String(error?.cause?.message || error?.cause || '');
+      throw e;
+    }
+  }
+  return completed.length;
+}
+
+async function installSchema(env){
+  const completed=[];
+  for(const stage of V11_SCHEMA_STAGES){
+    try{
+      const count=await runSchemaStage(env,stage);
+      completed.push({stage:stage.name,statements:count});
+    }catch(error){
+      error.completed=completed;
+      throw error;
+    }
+  }
+  // final verification: required core objects must be queryable
+  const checks=['users','system_settings','classes','account_requests','system_incidents'];
+  for(const table of checks){
+    try{ await env.DB.prepare(`SELECT 1 FROM ${table} LIMIT 1`).first(); }
+    catch(error){
+      const e=new Error(`Bảng bắt buộc ${table} chưa sẵn sàng: ${error?.message||error}`);
+      e.code='SETUP_SCHEMA_VERIFY_FAILED';
+      e.stage='verification';
+      e.statement_preview=`SELECT 1 FROM ${table} LIMIT 1`;
+      e.completed=completed;
       throw e;
     }
   }
   return {completed};
 }
+
+async function ensureLatestSchema(env){
+  // Same safe one-statement-at-a-time engine used for upgrades from the admin UI.
+  return installSchema(env);
+}
+
 async function adminLog(env,userId,action,detail={}){
   try{await env.DB.prepare(`INSERT INTO admin_activity(actor_user_id,action,detail_json,created_at) VALUES(?,?,?,CURRENT_TIMESTAMP)`).bind(userId||null,action,JSON.stringify(detail)).run()}catch{}
 }
@@ -240,7 +172,16 @@ async function routeApi(request, env, ctx, url) {
   const path = url.pathname;
   const method = request.method;
 
-  if (path === '/api/health') return ok({ service:'Sky First Network Digital Learning Center', version:'V10.4 Pages D1 Fix', time:nowIso(), domain:env.APP_URL, environment:{ setup_token_configured:!!env.SETUP_TOKEN, d1_bound:!!env.DB, r2_bound:!!env.FILES, resend_configured:!!env.RESEND_API_KEY } });
+  if (path === '/api/health') return ok({ service:'Sky First Network Digital Learning Center', version:'V11 Fresh Pages Rebuild', installer:'V11_ONE_STATEMENT_ENGINE', schema_stages:V11_SCHEMA_STAGES.length, schema_statements:V11_SCHEMA_STAGES.reduce((n,x)=>n+x.statements.length,0), time:nowIso(), domain:env.APP_URL, environment:{ setup_token_configured:!!env.SETUP_TOKEN, d1_bound:!!env.DB, r2_bound:!!env.FILES, resend_configured:!!env.RESEND_API_KEY } });
+
+  if (path === '/api/setup/installer-info' && method === 'GET') return ok({
+    version:'V11 Fresh Pages Rebuild',
+    engine:'V11_ONE_STATEMENT_ENGINE',
+    uses_db_exec:false,
+    uses_pragma_foreign_keys:false,
+    stages:V11_SCHEMA_STAGES.map(x=>({name:x.name,statements:x.statements.length})),
+    total_statements:V11_SCHEMA_STAGES.reduce((n,x)=>n+x.statements.length,0)
+  });
 
   if (path === '/api/setup/status' && method === 'GET') {
     const ready=await schemaReady(env);
@@ -261,11 +202,15 @@ async function routeApi(request, env, ctx, url) {
       return bad('Không thể hoàn tất cài đặt dữ liệu nền tảng.',500,{
         code:e?.code||'SETUP_INSTALL_FAILED',
         stage:e?.stage||'unknown',
+        statement_index:e?.statement_index||null,
+        statement_total:e?.statement_total||null,
+        statement_preview:e?.statement_preview||'',
         completed:e?.completed||[],
         error:String(e?.message||'Lỗi D1 không xác định').slice(0,1200),
         cause:String(e?.causeText||'').slice(0,1200),
         retry_safe:true,
-        hint:'Có thể bấm Cài đặt lại sau khi xử lý lỗi. Installer dùng CREATE ... IF NOT EXISTS và INSERT OR IGNORE để hạn chế lỗi khi chạy lại.'
+        installer:'V11_ONE_STATEMENT_ENGINE',
+        hint:'Installer V11 không dùng DB.exec(). Mỗi câu SQL hoàn chỉnh được chạy riêng qua D1 prepare().run(), nên có thể xác định chính xác câu lệnh lỗi.'
       });
     }
   }
@@ -775,7 +720,7 @@ async function routeApi(request, env, ctx, url) {
   }
 
   if(path==='/api/admin/system/upgrade' && method==='POST'){
-    const admin=await requireRole(request,env,['super_admin']); await env.DB.exec(EXTRA_V9_SCHEMA_SQL); await env.DB.exec(EXTRA_V10_SCHEMA_SQL); await env.DB.prepare(`INSERT INTO system_settings(key,value,updated_by,updated_at) VALUES('platform_version','V10',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value='V10',updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(admin.user_id).run(); await adminLog(env,admin.user_id,'system.schema_upgrade',{version:'V10'}); return ok({version:'V10',message:'Cấu trúc V10 đã được kiểm tra và cập nhật.'});
+    const admin=await requireRole(request,env,['super_admin']); const upgrade=await ensureLatestSchema(env); await env.DB.prepare(`INSERT INTO system_settings(key,value,updated_by,updated_at) VALUES('platform_version','V11',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value='V11',updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(admin.user_id).run(); await adminLog(env,admin.user_id,'system.schema_upgrade',{version:'V11',completed:upgrade.completed}); return ok({version:'V11',message:'Cấu trúc V11 đã được kiểm tra và cập nhật bằng installer an toàn.',completed:upgrade.completed});
   }
 
   if(path==='/api/admin/system/diagnostics' && method==='GET'){
