@@ -1,4 +1,3 @@
-PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS email_logs (
   id TEXT PRIMARY KEY,

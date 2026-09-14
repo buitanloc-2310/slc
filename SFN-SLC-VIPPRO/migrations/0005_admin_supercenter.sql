@@ -1,4 +1,3 @@
-PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS notification_center (
   id TEXT PRIMARY KEY,

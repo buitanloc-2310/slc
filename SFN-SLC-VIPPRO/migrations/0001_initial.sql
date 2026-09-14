@@ -1,4 +1,3 @@
-PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS counters (
   key TEXT PRIMARY KEY,
