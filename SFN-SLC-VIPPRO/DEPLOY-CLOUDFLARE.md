@@ -1,23 +1,24 @@
-# Deploy Cloudflare — V10
+# Cloudflare Pages deployment — SLC V10 Pages Edition
 
-Dự án này là **Cloudflare Worker**, không phải Pages static-only.
+## Màn Build configuration
 
-Nếu repository vẫn có thư mục bọc `SFN-SLC-VIPPRO/`:
+```text
+Framework preset: None
+Build command: npm install && npm run check
+Build output directory: public
+Root directory: SFN-SLC-VIPPRO
+```
 
-- Root directory: `SFN-SLC-VIPPRO`
-- Build command: `npm install && npm run check`
-- Deploy command: `npx wrangler deploy`
-- Không nhập Build output directory kiểu Pages.
+Bản Pages Edition có thư mục `/functions`, vì vậy Cloudflare sẽ tự deploy Pages Functions cùng site public.
 
-Bindings đã khai trong `wrangler.jsonc`:
+## Sau khi deploy
 
-- `DB` → D1 `sfn-slc-db`
-- `FILES` → R2 `skyfirsthoctap`
-- `LIVE_ROOM` → Durable Object `LiveRoom`
+1. Kiểm tra `/api/health` phải trả JSON.
+2. Kiểm tra `/api/setup/status`.
+3. Đặt secret `SETUP_TOKEN`.
+4. Đặt `RESEND_API_KEY` nếu dùng email.
+5. Mở website và chạy khởi tạo lần đầu.
 
-Secrets cần đặt trong Cloudflare:
+D1 và R2 đã được khai báo trong `wrangler.json` với binding `DB` và `FILES`.
 
-- `SETUP_TOKEN`
-- `RESEND_API_KEY`
-
-Sau khi deploy V10 từ V9: đăng nhập Super Admin → mở **Control Center** → tab **Hệ thống** → **Kiểm tra lõi hệ thống**. Control Center tự gọi endpoint nâng schema idempotent.
+Riêng realtime WebSocket cần Durable Object external binding theo giới hạn của Cloudflare Pages.

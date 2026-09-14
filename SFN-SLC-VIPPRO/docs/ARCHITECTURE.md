@@ -1,3 +1,7 @@
+# Lưu ý cho V10 Pages Edition
+
+Bản phát hành này chạy API chính bằng Cloudflare Pages Functions. Các nội dung Worker-first bên dưới được giữ làm tài liệu kiến trúc lịch sử. Với triển khai hiện tại, ưu tiên `PAGES-SETUP.md` và `DEPLOY-CLOUDFLARE.md`.
+
 # Kiến trúc SLC
 
 ## Identity
