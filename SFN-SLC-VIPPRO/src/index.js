@@ -67,14 +67,6 @@ async function tokenFingerprint(v=''){
 function htmlEsc(s=''){return String(s ?? '').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
 function validEmail(s=''){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(s));}
 async function sha256Text(s=''){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(String(s)));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');}
-
-async function ensureClassPlusSchema(env){
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS class_settings (class_id TEXT PRIMARY KEY,class_type TEXT NOT NULL DEFAULT 'standard',access_mode TEXT NOT NULL DEFAULT 'code',visibility TEXT NOT NULL DEFAULT 'private',live_mode TEXT NOT NULL DEFAULT 'classroom',max_members INTEGER NOT NULL DEFAULT 200,features_json TEXT NOT NULL DEFAULT '{"feed":true,"materials":true,"assignments":true,"exams":true,"chat":true,"schedule":true,"members":true,"live":true}',updated_by TEXT,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE)`).run();
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS class_access_codes (id TEXT PRIMARY KEY,class_id TEXT NOT NULL,code TEXT NOT NULL UNIQUE,label TEXT NOT NULL DEFAULT '',member_role TEXT NOT NULL DEFAULT 'student',max_uses INTEGER NOT NULL DEFAULT 0,used_count INTEGER NOT NULL DEFAULT 0,expires_at TEXT,enabled INTEGER NOT NULL DEFAULT 1,created_by TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(class_id) REFERENCES classes(id) ON DELETE CASCADE,FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL)`).run();
-  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_class_access_codes_class ON class_access_codes(class_id,enabled,created_at DESC)`).run();
-}
-function classType(v){return ['standard','course','study_group','workshop','tutoring','volunteer_training','club','event_class'].includes(String(v||''))?String(v):'standard'}
-function memberRole(v){return ['student','observer'].includes(String(v||''))?String(v):'student'}
 async function requireClassMember(env,classId,userId,roles=null){const m=await env.DB.prepare(`SELECT role,status FROM class_members WHERE class_id=? AND user_id=? AND status='active'`).bind(classId,userId).first();if(!m)throw Object.assign(new Error('FORBIDDEN'),{status:403});if(roles&&!roles.includes(m.role))throw Object.assign(new Error('FORBIDDEN'),{status:403});return m;}
 async function checkLoginThrottle(env,key){try{const r=await env.DB.prepare(`SELECT attempts,window_started_at,blocked_until FROM login_throttle WHERE key=?`).bind(key).first();if(!r)return {allowed:true};if(r.blocked_until&&new Date(r.blocked_until)>new Date())return {allowed:false,retry_after:Math.max(1,Math.ceil((new Date(r.blocked_until)-Date.now())/1000))};const age=Date.now()-new Date(r.window_started_at).getTime();if(age>15*60*1000){await env.DB.prepare(`DELETE FROM login_throttle WHERE key=?`).bind(key).run();return {allowed:true}}return {allowed:true}}catch{return {allowed:true}}}
 async function recordLoginFailure(env,key,limit=10){try{const row=await env.DB.prepare(`SELECT attempts,window_started_at FROM login_throttle WHERE key=?`).bind(key).first();const now=Date.now();if(!row||now-new Date(row.window_started_at).getTime()>15*60*1000){await env.DB.prepare(`INSERT INTO login_throttle(key,attempts,window_started_at,blocked_until,updated_at) VALUES(?,1,CURRENT_TIMESTAMP,NULL,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET attempts=1,window_started_at=CURRENT_TIMESTAMP,blocked_until=NULL,updated_at=CURRENT_TIMESTAMP`).bind(key).run();return}const attempts=Number(row.attempts||0)+1;const blocked=attempts>=limit?new Date(now+15*60*1000).toISOString():null;await env.DB.prepare(`UPDATE login_throttle SET attempts=?,blocked_until=?,updated_at=CURRENT_TIMESTAMP WHERE key=?`).bind(attempts,blocked,key).run()}catch{}}
@@ -354,7 +346,7 @@ async function routeApi(request, env, ctx, url) {
     const token=randomToken(32); const cfg=await getSettings(env).catch(()=>({})); const days=Math.max(1,Math.min(90,Number(cfg.default_session_days||env.SESSION_DAYS||30)));
     const exp=new Date(Date.now()+days*86400000).toISOString(); const ipHash=ip?await sha256Text(ip):'';
     await env.DB.prepare(`INSERT INTO sessions(token,user_id,ip_hash,user_agent,expires_at,created_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(token,u.id,ipHash,(request.headers.get('user-agent')||'').slice(0,500),exp).run();
-    return json({ok:true,user:{full_name:u.full_name,role:u.role}},200,{'set-cookie':sessionCookie(token,days)});
+    return json({ok:true,user:{sfn_id:u.sfn_id,full_name:u.full_name,role:u.role}},200,{'set-cookie':sessionCookie(token,days)});
   }
 
   if (path === '/api/auth/logout' && method === 'POST') {
@@ -365,7 +357,7 @@ async function routeApi(request, env, ctx, url) {
   if (path === '/api/auth/me' && method === 'GET') {
     const u=await getSession(request,env); if(!u) return ok({user:null});
     const exam=await activeExam(u.user_id,env);
-    return ok({user:{id:u.user_id,full_name:u.full_name,email:u.email,phone:u.phone,role:u.role,avatar_key:u.avatar_key},active_exam:exam||null});
+    return ok({user:{id:u.user_id,sfn_id:u.sfn_id,full_name:u.full_name,email:u.email,phone:u.phone,role:u.role,avatar_key:u.avatar_key},active_exam:exam||null});
   }
 
   if (path === '/api/auth/activate' && method === 'POST') {
@@ -408,21 +400,20 @@ async function routeApi(request, env, ctx, url) {
     const u=await requireUser(request,env); await env.DB.prepare(`DELETE FROM sessions WHERE id=? AND user_id=?`).bind(Number(accountSession[1]),u.user_id).run(); return ok();
   }
   if (path === '/api/classes' && method === 'GET') {
-    await ensureClassPlusSchema(env); const u=await requireUser(request,env);
-    const rows=await env.DB.prepare(`SELECT c.*,cm.role member_role,COALESCE(cs.class_type,'standard') class_type,COALESCE(cs.access_mode,'code') access_mode,(SELECT COUNT(*) FROM class_members x WHERE x.class_id=c.id AND x.status='active') member_count FROM classes c JOIN class_members cm ON cm.class_id=c.id LEFT JOIN class_settings cs ON cs.class_id=c.id WHERE cm.user_id=? AND cm.status='active' ORDER BY c.updated_at DESC`).bind(u.user_id).all();
-    const list=(rows.results||[]).map(r=>{const x={...r};if(!['teacher','assistant'].includes(x.member_role))delete x.join_code;return x});return ok({classes:list});
+    const u=await requireUser(request,env);
+    const rows=await env.DB.prepare(`SELECT c.*,cm.role member_role,(SELECT COUNT(*) FROM class_members x WHERE x.class_id=c.id AND x.status='active') member_count FROM classes c JOIN class_members cm ON cm.class_id=c.id WHERE cm.user_id=? AND cm.status='active' ORDER BY c.updated_at DESC`).bind(u.user_id).all();
+    return ok({classes:rows.results});
   }
 
   if (path === '/api/classes' && method === 'POST') {
     const u=await requireRole(request,env,['super_admin','school_admin','teacher']);
     const b=await request.json(); if(!str(b.name)) return bad('Tên lớp không được để trống.');
     const id=crypto.randomUUID(), joinCode=slugCode('SLC');
-    await ensureClassPlusSchema(env);
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO classes(id,name,description,unit,cover_key,join_code,owner_user_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'active',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(id,str(b.name),str(b.description),str(b.unit),null,joinCode,u.user_id),
-      env.DB.prepare(`INSERT INTO class_members(class_id,user_id,role,status,joined_at) VALUES(?,?,'teacher','active',CURRENT_TIMESTAMP)`).bind(id,u.user_id),
-      env.DB.prepare(`INSERT OR REPLACE INTO class_settings(class_id,class_type,access_mode,visibility,live_mode,max_members,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(id,classType(b.class_type),str(b.access_mode)||'code',str(b.visibility)||'private',str(b.live_mode)||'classroom',Math.max(5,Math.min(5000,Number(b.max_members)||200)),u.user_id)
+      env.DB.prepare(`INSERT INTO class_members(class_id,user_id,role,status,joined_at) VALUES(?,?,'teacher','active',CURRENT_TIMESTAMP)`).bind(id,u.user_id)
     ]);
+    try{await env.DB.prepare(`INSERT OR IGNORE INTO class_profiles(class_id,class_type,theme,room_mode,capacity,allow_guests,updated_by) VALUES(?,?,?,?,?,?,?)`).bind(id,'class','aurora','classroom',40,1,u.user_id).run()}catch{}
     return ok({id,join_code:joinCode});
   }
 
@@ -431,29 +422,59 @@ async function routeApi(request, env, ctx, url) {
     const u=await requireUser(request,env); const id=classMatch[1];
     const member=await env.DB.prepare(`SELECT role FROM class_members WHERE class_id=? AND user_id=? AND status='active'`).bind(id,u.user_id).first();
     if(!member) return bad('Bạn không thuộc lớp này.',403);
-    await ensureClassPlusSchema(env); const cls=await env.DB.prepare(`SELECT c.*,u.full_name owner_name,COALESCE(cs.class_type,'standard') class_type,COALESCE(cs.access_mode,'code') access_mode,COALESCE(cs.visibility,'private') visibility,COALESCE(cs.live_mode,'classroom') live_mode,COALESCE(cs.max_members,200) max_members,COALESCE(cs.features_json,'{}') features_json FROM classes c JOIN users u ON u.id=c.owner_user_id LEFT JOIN class_settings cs ON cs.class_id=c.id WHERE c.id=?`).bind(id).first();
-    const members=await env.DB.prepare(`SELECT cm.role,u.full_name,u.email FROM class_members cm JOIN users u ON u.id=cm.user_id WHERE cm.class_id=? AND cm.status='active' ORDER BY cm.role,u.full_name`).bind(id).all();
-    const safeClass={...cls};if(!['teacher','assistant'].includes(member.role))delete safeClass.join_code;return ok({class:safeClass,members:members.results,my_role:member.role});
+    const cls=await env.DB.prepare(`SELECT c.*,u.full_name owner_name FROM classes c JOIN users u ON u.id=c.owner_user_id WHERE c.id=?`).bind(id).first();
+    const members=await env.DB.prepare(`SELECT cm.role,u.sfn_id,u.full_name,u.email FROM class_members cm JOIN users u ON u.id=cm.user_id WHERE cm.class_id=? AND cm.status='active' ORDER BY cm.role,u.full_name`).bind(id).all();
+    let profile=null; try{profile=await env.DB.prepare(`SELECT * FROM class_profiles WHERE class_id=?`).bind(id).first()}catch{}
+    return ok({class:cls,members:members.results,my_role:member.role,profile:profile||{class_type:'class',theme:'aurora',room_mode:'classroom',capacity:40,allow_guests:1}});
   }
 
   const joinMatch=path.match(/^\/api\/classes\/join$/);
   if(joinMatch && method==='POST'){
     const u=await requireUser(request,env); const b=await request.json(); const code=str(b.code).toUpperCase();
-    const cls=await env.DB.prepare(`SELECT id FROM classes WHERE upper(join_code)=? AND status='active'`).bind(code).first();
-    if(!cls) return bad('Mã lớp không hợp lệ.');
-    await env.DB.prepare(`INSERT INTO class_members(class_id,user_id,role,status,joined_at) VALUES(?,?,'student','active',CURRENT_TIMESTAMP) ON CONFLICT(class_id,user_id) DO UPDATE SET status='active'`).bind(cls.id,u.user_id).run();
-    return ok({class_id:cls.id});
+    let cls=await env.DB.prepare(`SELECT id,'student' target_role,NULL invite_id FROM classes WHERE upper(join_code)=? AND status='active'`).bind(code).first();
+    if(!cls){
+      try{cls=await env.DB.prepare(`SELECT c.id,i.target_role,i.id invite_id,i.max_uses,i.use_count FROM class_invite_codes i JOIN classes c ON c.id=i.class_id WHERE upper(i.code)=? AND i.active=1 AND c.status='active' AND (i.expires_at IS NULL OR i.expires_at>CURRENT_TIMESTAMP) AND (i.max_uses=0 OR i.use_count<i.max_uses) LIMIT 1`).bind(code).first()}catch{}
+    }
+    if(!cls) return bad('Mã tham gia không hợp lệ hoặc đã hết hạn.');
+    const role=['student','observer'].includes(cls.target_role)?cls.target_role:'student';
+    await env.DB.prepare(`INSERT INTO class_members(class_id,user_id,role,status,joined_at) VALUES(?,?,?,'active',CURRENT_TIMESTAMP) ON CONFLICT(class_id,user_id) DO UPDATE SET status='active',role=excluded.role`).bind(cls.id,u.user_id,role).run();
+    if(cls.invite_id) await env.DB.prepare(`UPDATE class_invite_codes SET use_count=use_count+1 WHERE id=?`).bind(cls.invite_id).run();
+    return ok({class_id:cls.id,role});
   }
 
+  const classProfile=path.match(/^\/api\/classes\/([^/]+)\/profile$/);
+  if(classProfile && method==='GET'){
+    const u=await requireUser(request,env); const id=classProfile[1]; const m=await requireClassMember(env,id,u.user_id);
+    let profile=null; try{profile=await env.DB.prepare(`SELECT * FROM class_profiles WHERE class_id=?`).bind(id).first()}catch{}
+    return ok({profile:profile||{class_id:id,class_type:'class',theme:'aurora',room_mode:'classroom',capacity:40,allow_guests:1},my_role:m.role});
+  }
+  if(classProfile && method==='PATCH'){
+    const u=await requireUser(request,env); const id=classProfile[1]; await requireClassMember(env,id,u.user_id,['teacher','assistant']); const b=await request.json();
+    const classType=['class','course','study_group','workshop','tutoring','volunteer_training','club','event'].includes(b.class_type)?b.class_type:'class';
+    const theme=['aurora','midnight','sunrise','forest'].includes(b.theme)?b.theme:'aurora';
+    const roomMode=['classroom','presentation','discussion','webinar'].includes(b.room_mode)?b.room_mode:'classroom';
+    const capacity=Math.max(2,Math.min(200,Number(b.capacity||40))); const allowGuests=b.allow_guests?1:0;
+    await env.DB.prepare(`INSERT INTO class_profiles(class_id,class_type,theme,room_mode,capacity,allow_guests,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(class_id) DO UPDATE SET class_type=excluded.class_type,theme=excluded.theme,room_mode=excluded.room_mode,capacity=excluded.capacity,allow_guests=excluded.allow_guests,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(id,classType,theme,roomMode,capacity,allowGuests,u.user_id).run();
+    await env.DB.prepare(`INSERT INTO live_room_settings(class_id,room_mode,updated_by,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(class_id) DO UPDATE SET room_mode=excluded.room_mode,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(id,roomMode,u.user_id).run();
+    return ok({class_type:classType,theme,room_mode:roomMode,capacity,allow_guests:allowGuests});
+  }
 
-  const settingsMatch=path.match(/^\/api\/classes\/([^/]+)\/settings$/);
-  if(settingsMatch && method==='GET'){const u=await requireUser(request,env);await requireClassMember(env,settingsMatch[1],u.user_id);await ensureClassPlusSchema(env);const row=await env.DB.prepare(`SELECT * FROM class_settings WHERE class_id=?`).bind(settingsMatch[1]).first();return ok({settings:row||{class_id:settingsMatch[1],class_type:'standard',access_mode:'code',visibility:'private',live_mode:'classroom',max_members:200,features_json:'{}'}})}
-  if(settingsMatch && method==='PUT'){const u=await requireUser(request,env);await requireClassMember(env,settingsMatch[1],u.user_id,['teacher','assistant']);await ensureClassPlusSchema(env);const b=await request.json();const features=typeof b.features==='object'?JSON.stringify(b.features):str(b.features_json)||'{}';await env.DB.prepare(`INSERT INTO class_settings(class_id,class_type,access_mode,visibility,live_mode,max_members,features_json,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(class_id) DO UPDATE SET class_type=excluded.class_type,access_mode=excluded.access_mode,visibility=excluded.visibility,live_mode=excluded.live_mode,max_members=excluded.max_members,features_json=excluded.features_json,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(settingsMatch[1],classType(b.class_type),['code','invite','closed'].includes(str(b.access_mode))?str(b.access_mode):'code',['private','unlisted'].includes(str(b.visibility))?str(b.visibility):'private',['classroom','seminar','presentation','discussion'].includes(str(b.live_mode))?str(b.live_mode):'classroom',Math.max(5,Math.min(5000,Number(b.max_members)||200)),features,u.user_id).run();return ok()}
-  const codesMatch=path.match(/^\/api\/classes\/([^/]+)\/access-codes$/);
-  if(codesMatch && method==='GET'){const u=await requireUser(request,env);await requireClassMember(env,codesMatch[1],u.user_id,['teacher','assistant']);await ensureClassPlusSchema(env);const rows=await env.DB.prepare(`SELECT id,code,label,member_role,max_uses,used_count,expires_at,enabled,created_at FROM class_access_codes WHERE class_id=? ORDER BY created_at DESC`).bind(codesMatch[1]).all();return ok({codes:rows.results||[]})}
-  if(codesMatch && method==='POST'){const u=await requireUser(request,env);await requireClassMember(env,codesMatch[1],u.user_id,['teacher','assistant']);await ensureClassPlusSchema(env);const b=await request.json();const code=(str(b.code)||slugCode('JOIN')).toUpperCase().replace(/[^A-Z0-9_-]/g,'').slice(0,32);if(code.length<5)return bad('Mã tham gia phải có ít nhất 5 ký tự.');const role=memberRole(b.member_role);const id=crypto.randomUUID();await env.DB.prepare(`INSERT INTO class_access_codes(id,class_id,code,label,member_role,max_uses,expires_at,enabled,created_by,created_at) VALUES(?,?,?,?,?,?,?,1,?,CURRENT_TIMESTAMP)`).bind(id,codesMatch[1],code,str(b.label),role,Math.max(0,Math.min(10000,Number(b.max_uses)||0)),str(b.expires_at)||null,u.user_id).run();return ok({id,code,member_role:role})}
-  const codeToggle=path.match(/^\/api\/classes\/([^/]+)\/access-codes\/([^/]+)$/);
-  if(codeToggle && method==='PATCH'){const u=await requireUser(request,env);await requireClassMember(env,codeToggle[1],u.user_id,['teacher','assistant']);const b=await request.json();await env.DB.prepare(`UPDATE class_access_codes SET enabled=? WHERE id=? AND class_id=?`).bind(b.enabled?1:0,codeToggle[2],codeToggle[1]).run();return ok()}
+  const classCodes=path.match(/^\/api\/classes\/([^/]+)\/invite-codes$/);
+  if(classCodes && method==='GET'){
+    const u=await requireUser(request,env); const id=classCodes[1]; await requireClassMember(env,id,u.user_id,['teacher','assistant']);
+    const rows=await env.DB.prepare(`SELECT id,code,label,target_role,max_uses,use_count,expires_at,active,created_at FROM class_invite_codes WHERE class_id=? ORDER BY created_at DESC`).bind(id).all(); return ok({codes:rows.results||[]});
+  }
+  if(classCodes && method==='POST'){
+    const u=await requireUser(request,env); const id=classCodes[1]; await requireClassMember(env,id,u.user_id,['teacher','assistant']); const b=await request.json();
+    const role=['student','observer'].includes(b.target_role)?b.target_role:'student'; const code=(str(b.code)||slugCode('JOIN')).toUpperCase().replace(/[^A-Z0-9-]/g,'').slice(0,32); if(code.length<4)return bad('Mã tham gia phải có ít nhất 4 ký tự.');
+    const maxUses=Math.max(0,Math.min(10000,Number(b.max_uses||0))); const expires=str(b.expires_at)||null;
+    try{await env.DB.prepare(`INSERT INTO class_invite_codes(id,class_id,code,label,target_role,max_uses,use_count,expires_at,active,created_by,created_at) VALUES(?,?,?,?,?,?,0,?,1,?,CURRENT_TIMESTAMP)`).bind(crypto.randomUUID(),id,code,str(b.label).slice(0,80),role,maxUses,expires,u.user_id).run()}catch(e){return bad('Mã tham gia đã tồn tại hoặc không hợp lệ.',409,{detail:String(e?.message||e)})}
+    return ok({code});
+  }
+  const classCodeToggle=path.match(/^\/api\/classes\/([^/]+)\/invite-codes\/([^/]+)$/);
+  if(classCodeToggle && method==='PATCH'){
+    const u=await requireUser(request,env); await requireClassMember(env,classCodeToggle[1],u.user_id,['teacher','assistant']); const b=await request.json(); await env.DB.prepare(`UPDATE class_invite_codes SET active=? WHERE id=? AND class_id=?`).bind(b.active?1:0,classCodeToggle[2],classCodeToggle[1]).run(); return ok();
+  }
 
   const postsMatch=path.match(/^\/api\/classes\/([^/]+)\/posts$/);
   if(postsMatch && method==='GET'){
@@ -583,7 +604,7 @@ async function routeApi(request, env, ctx, url) {
   }
   const guestLive=path.match(/^\/api\/public\/live\/([^/]+)\/guest-token$/);
   if(guestLive && method==='POST'){
-    const cfg=await getSettings(env).catch(()=>({})); if(cfg.allow_guest_live==='0')return bad('Phòng học hiện không cho phép khách tham gia.',403); const b=await request.json(); const name=str(b.name).slice(0,80); if(name.length<2)return bad('Vui lòng nhập tên hiển thị.'); const cls=await env.DB.prepare(`SELECT id,name FROM classes WHERE id=? AND status='active'`).bind(guestLive[1]).first(); if(!cls)return bad('Không tìm thấy lớp.',404); const token=randomToken(28); const exp=new Date(Date.now()+14*60*60*1000).toISOString(); await env.DB.prepare(`INSERT INTO live_access_tokens(token,class_id,user_id,guest_name,role,expires_at,created_at) VALUES(?,?,NULL,?,'guest',?,CURRENT_TIMESTAMP)`).bind(token,cls.id,name,exp).run(); return ok({token,expires_at:exp,class:cls});
+    const cfg=await getSettings(env).catch(()=>({})); if(cfg.allow_guest_live==='0')return bad('Phòng học hiện không cho phép khách tham gia.',403); const b=await request.json(); const name=str(b.name).slice(0,80); if(name.length<2)return bad('Vui lòng nhập tên hiển thị.'); const cls=await env.DB.prepare(`SELECT id,name FROM classes WHERE id=? AND status='active'`).bind(guestLive[1]).first(); if(!cls)return bad('Không tìm thấy lớp.',404); try{const cp=await env.DB.prepare(`SELECT allow_guests FROM class_profiles WHERE class_id=?`).bind(cls.id).first();if(cp&&Number(cp.allow_guests)===0)return bad('Lớp này không cho phép khách tham gia phòng học.',403)}catch{} const token=randomToken(28); const exp=new Date(Date.now()+14*60*60*1000).toISOString(); await env.DB.prepare(`INSERT INTO live_access_tokens(token,class_id,user_id,guest_name,role,expires_at,created_at) VALUES(?,?,NULL,?,'guest',?,CURRENT_TIMESTAMP)`).bind(token,cls.id,name,exp).run(); return ok({token,expires_at:exp,class:cls});
   }
 
   if(path==='/api/support/tickets' && method==='GET'){
@@ -793,7 +814,7 @@ async function routeApi(request, env, ctx, url) {
   }
 
   if(path==='/api/admin/system/upgrade' && method==='POST'){
-    const admin=await requireRole(request,env,['super_admin']); const upgrade=await ensureLatestSchema(env); await ensureClassPlusSchema(env); await env.DB.prepare(`INSERT INTO system_settings(key,value,updated_by,updated_at) VALUES('platform_version','V11',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value='V11',updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(admin.user_id).run(); await adminLog(env,admin.user_id,'system.schema_upgrade',{version:'V11',completed:upgrade.completed}); return ok({version:'V11',message:'Cấu trúc V11 đã được kiểm tra và cập nhật bằng installer an toàn.',completed:upgrade.completed});
+    const admin=await requireRole(request,env,['super_admin']); const upgrade=await ensureLatestSchema(env); await env.DB.prepare(`INSERT INTO system_settings(key,value,updated_by,updated_at) VALUES('platform_version','V11',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value='V11',updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP`).bind(admin.user_id).run(); await adminLog(env,admin.user_id,'system.schema_upgrade',{version:'V11',completed:upgrade.completed}); return ok({version:'V11',message:'Cấu trúc V11 đã được kiểm tra và cập nhật bằng installer an toàn.',completed:upgrade.completed});
   }
 
   if(path==='/api/admin/system/diagnostics' && method==='GET'){
