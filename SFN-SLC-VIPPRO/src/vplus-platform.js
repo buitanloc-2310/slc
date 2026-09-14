@@ -253,25 +253,70 @@ function extractOpenAIResponseSources(data){
 }
 
 
-export async function testAiAuthentication(env){
-  const cfg=aiProviderConfig(env);
-  const apiKey=String(env?.AI_API_KEY||'').trim();
-  if(!apiKey) return {ok:false,status:0,code:'AI_KEY_MISSING',detail:''};
-  if(cfg.provider!=='openai_responses') return {ok:true,status:null,code:'AUTH_TEST_NOT_APPLICABLE',detail:''};
+async function sha256Short(value=''){
+  try{
+    const bytes=new TextEncoder().encode(String(value));
+    const digest=await crypto.subtle.digest('SHA-256',bytes);
+    return Array.from(new Uint8Array(digest)).slice(0,8).map(b=>b.toString(16).padStart(2,'0')).join('');
+  }catch{return ''}
+}
+
+export async function aiKeyDiagnostic(env){
+  const raw=String(env?.AI_API_KEY||'');
+  const normalized=raw.trim();
+  const prefix=normalized.startsWith('sk-proj-')?'sk-proj':normalized.startsWith('sk-svcacct-')?'sk-svcacct':normalized.startsWith('sk-')?'sk':(normalized?'other':'missing');
+  return {
+    present:!!normalized,
+    raw_length:raw.length,
+    normalized_length:normalized.length,
+    whitespace_trimmed:raw!==normalized,
+    key_type:prefix,
+    fingerprint:normalized?await sha256Short(normalized):'',
+    runtime:{
+      pages:String(env?.CF_PAGES||'')==='1',
+      branch:String(env?.CF_PAGES_BRANCH||'').slice(0,120)||null,
+      commit:String(env?.CF_PAGES_COMMIT_SHA||'').slice(0,12)||null
+    }
+  };
+}
+
+async function probeOpenAIEndpoint(url,apiKey,timeoutMs){
   let r;
   try{
-    r=await fetch('https://api.openai.com/v1/me',{
-      method:'GET',
-      headers:{'authorization':`Bearer ${apiKey}`},
-      signal:AbortSignal.timeout(Math.min(cfg.timeoutMs,15000))
-    });
+    r=await fetch(url,{method:'GET',headers:{'authorization':`Bearer ${apiKey}`},signal:AbortSignal.timeout(Math.min(timeoutMs,15000))});
   }catch(e){
     return {ok:false,status:0,code:e?.name==='TimeoutError'?'AI_AUTH_TIMEOUT':'AI_AUTH_NETWORK',detail:String(e?.message||e).slice(0,600)};
   }
-  let detail='';
-  if(!r.ok){try{detail=(await r.text()).slice(0,600)}catch{}}
-  else {try{await r.body?.cancel?.()}catch{}}
-  return {ok:r.ok,status:r.status,code:r.ok?'AUTH_OK':'AUTH_FAILED',detail};
+  let detail='',errorCode='';
+  if(!r.ok){
+    try{
+      const text=(await r.text()).slice(0,1200); detail=text;
+      try{errorCode=String(JSON.parse(text)?.error?.code||'').slice(0,120)}catch{}
+    }catch{}
+  } else {try{await r.body?.cancel?.()}catch{}}
+  return {ok:r.ok,status:r.status,code:r.ok?'AUTH_OK':'AUTH_FAILED',error_code:errorCode||null,detail};
+}
+
+export async function testAiAuthentication(env){
+  const cfg=aiProviderConfig(env);
+  const apiKey=String(env?.AI_API_KEY||'').trim();
+  const key=await aiKeyDiagnostic(env);
+  if(!apiKey) return {ok:false,status:0,code:'AI_KEY_MISSING',detail:'',key,me:null,models:null};
+  if(cfg.provider!=='openai_responses') return {ok:true,status:null,code:'AUTH_TEST_NOT_APPLICABLE',detail:'',key,me:null,models:null};
+
+  // Two independent OpenAI auth probes. /v1/me is the documented account-info test;
+  // /v1/models is used as a second check so a single endpoint cannot misdiagnose the secret.
+  const me=await probeOpenAIEndpoint('https://api.openai.com/v1/me',apiKey,cfg.timeoutMs);
+  const models=me.ok?null:await probeOpenAIEndpoint('https://api.openai.com/v1/models',apiKey,cfg.timeoutMs);
+  const fallbackOk=!!models?.ok;
+  return {
+    ok:me.ok||fallbackOk,
+    status:me.ok?me.status:(fallbackOk?models.status:(models?.status||me.status)),
+    code:(me.ok||fallbackOk)?'AUTH_OK':'AUTH_FAILED',
+    detail:me.ok?'':(fallbackOk?'':String(models?.detail||me.detail||'').slice(0,600)),
+    error_code:me.ok?null:(fallbackOk?null:(models?.error_code||me.error_code||null)),
+    key,me,models
+  };
 }
 
 export async function callAiProvider(env,{messages,temperature=.35,maxTokens=1200,webSearch=false}={}){
