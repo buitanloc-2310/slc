@@ -2,7 +2,7 @@ import { LiveRoom } from './live-room.js';
 import { V11_SCHEMA_STAGES } from './schema-v11.js';
 import { realtimeSfuConfig, createRealtimeSession, addRealtimeTracks, renegotiateRealtimeSession, ensureRealtimeSfuSchema } from './realtime-sfu.js';
 import { ensureV13Schema, getClassLiveSettings, safeJson, logLiveEvent } from './v13-platform.js';
-import { VPLUS, ensureVPlusSchema, recordPlatformEvent, auditAi, aiConfigured, aiProviderConfig, aiSupportsNativeResearch, callAiProvider, testAiAuthentication, aiKeyDiagnostic, buildAiSystemPrompt, hasPermission, requirePermission, safeUserMessage, consumeAiQuota, fetchResearchSources, parseAiAction } from './vplus-platform.js';
+import { VPLUS, ensureVPlusSchema, recordPlatformEvent, auditAi, aiConfigured, aiProviderConfig, aiSupportsNativeResearch, callAiProvider, testAiAuthentication, aiKeyDiagnostic, buildAiSystemPrompt, hasPermission, requirePermission, safeUserMessage, consumeAiQuota, fetchResearchSources, parseAiAction, moderateAiInput } from './vplus-platform.js';
 export { LiveRoom };
 
 const SECURITY_HEADERS = {'x-content-type-options':'nosniff','referrer-policy':'strict-origin-when-cross-origin','x-frame-options':'SAMEORIGIN','permissions-policy':'camera=(self), microphone=(self), display-capture=(self), geolocation=()','cross-origin-opener-policy':'same-origin-allow-popups'};
@@ -946,6 +946,7 @@ async function routeApi(request, env, ctx, url) {
     const u=await requireUser(request,env); requirePermission(u,'ai.ask'); await ensureVPlusSchema(env); await consumeAiQuota(env,u.user_id);
     const b=await request.json(); const message=str(b.message).slice(0,8000); const mode=['ask','research','create','analyze','act'].includes(str(b.mode))?str(b.mode):'ask'; const classId=str(b.class_id)||null;
     if(message.length<1)return bad('Vui lòng nhập nội dung bạn muốn hỏi.');
+    const safety=moderateAiInput(message); if(!safety.allowed){await auditAi(env,{userId:u.user_id,classId,mode,action:'safety_block',status:'blocked',detail:{category:safety.category}}).catch(()=>{});return bad(safety.message,422,{code:'AI_CONTENT_RESTRICTED'});}
     if(mode==='analyze' && !(hasPermission(u,'ai.analyze.class')||hasPermission(u,'ai.analyze.school'))) return bad('Bạn không có quyền sử dụng chế độ phân tích này.',403);
     if(mode==='act' && !hasPermission(u,'ai.act.class')) return bad('Bạn không có quyền sử dụng chế độ thực hiện trong lớp.',403);
     let classInfo=null,contextText=''; const sources=[];

@@ -351,6 +351,17 @@ export async function callAiProvider(env,{messages,temperature=.35,maxTokens=120
   return {text,providerId:String(data?.id||''),sources:cfg.provider==='openai_responses'?extractOpenAIResponseSources(data):[],provider:cfg.provider,model:cfg.model,webSearchUsed:usedWeb};
 }
 
+export function moderateAiInput(text='') {
+  const raw=String(text||'').slice(0,12000);
+  const n=raw.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+  const educational=/(giao duc gioi tinh|suc khoe sinh san|sinh hoc|phong chong xam hai|y khoa|medical|biology|sexual health|sex education|bao cao hoc thuat|nghien cuu)/i.test(n);
+  const minorSex=/(tre em|tre vi thanh nien|hoc sinh cap 1|duoi 18|minor|child|underage).{0,80}(quan he tinh duc|khieu dam|nude|sex|porn|goi duc|groom)/i.test(n)||/(quan he tinh duc|khieu dam|nude|sex|porn|groom|du do tinh duc|khai thac tinh duc).{0,80}(tre em|tre vi thanh nien|minor|child|underage|duoi 18)/i.test(n);
+  const explicit=/(porn|khieu dam|sex chat|erotic roleplay|truyen sex|anh nude|anh khoa than|noi dung 18\+|lam tinh|quan he tinh duc chi tiet)/i.test(n);
+  if(minorSex) return {allowed:false,category:'minor_sexual_safety',message:'Sky First AI không thể hỗ trợ nội dung tình dục liên quan đến người chưa thành niên. Nếu đây là nội dung giáo dục hoặc bảo vệ trẻ em, hãy diễn đạt theo hướng học tập, sức khỏe hoặc phòng chống xâm hại.'};
+  if(explicit&&!educational) return {allowed:false,category:'explicit_sexual',message:'Sky First AI không hỗ trợ tạo nội dung tình dục hoặc khiêu dâm. Nội dung giáo dục giới tính, sinh học và sức khỏe vẫn có thể được hỗ trợ khi có mục đích học tập rõ ràng.'};
+  return {allowed:true,category:educational?'educational_sensitive':'general'};
+}
+
 export function buildAiSystemPrompt({user,classInfo=null,mode='ask',contextText=''}={}){
   const role=String(user?.role||'student');
   const modeGuide={
@@ -360,5 +371,5 @@ export function buildAiSystemPrompt({user,classInfo=null,mode='ask',contextText=
     analyze:'Phân tích dữ liệu được cung cấp, nêu xu hướng và giới hạn của dữ liệu. Không suy diễn đặc điểm nhạy cảm của người học.',
     act:'Nếu yêu cầu có thể thực hiện bằng một trong các hành động được hỗ trợ, chỉ trả JSON hợp lệ dạng {\"message\":\"...\",\"action\":{\"key\":\"create_poll|add_resource|update_class_policy\",\"payload\":{...}}}. create_poll cần question, options (2-8 mục), anonymous; add_resource cần title,url; update_class_policy chỉ dùng allow_student_mic, allow_student_camera, allow_student_share, allow_chat, allow_reactions. Nếu không phù hợp, trả lời văn bản bình thường. Không tuyên bố đã thực hiện trước khi người dùng xác nhận.'
   }[mode]||'';
-  return `Bạn là Sky First Network AI, trợ lý bên trong Sky First School.\nVai trò người dùng: ${role}.\n${classInfo?`Lớp hiện tại: ${classInfo.name||classInfo.id||''}.`:''}\n${modeGuide}\nNguyên tắc bắt buộc: không tiết lộ hạ tầng nội bộ, secret, database, storage, transport, log kỹ thuật hoặc dữ liệu ngoài quyền người dùng; không bịa nguồn; nếu thiếu dữ liệu hãy nói rõ.\n${contextText?`Ngữ cảnh được phép sử dụng:\n${contextText}`:''}`;
+  return `Bạn là Sky First Network AI, trợ lý bên trong Sky First School.\nVai trò người dùng: ${role}.\n${classInfo?`Lớp hiện tại: ${classInfo.name||classInfo.id||''}.`:''}\n${modeGuide}\nNguyên tắc bắt buộc: không tiết lộ hạ tầng nội bộ, secret, database, storage, transport, log kỹ thuật hoặc dữ liệu ngoài quyền người dùng; không bịa nguồn; nếu thiếu dữ liệu hãy nói rõ. Không tạo nội dung tình dục hoặc khiêu dâm rõ ràng, không hỗ trợ grooming hay khai thác tình dục người chưa thành niên. Vẫn hỗ trợ nội dung giáo dục giới tính, sinh học, sức khỏe sinh sản và phòng chống xâm hại khi ngữ cảnh là giáo dục hoặc an toàn.\n${contextText?`Ngữ cảnh được phép sử dụng:\n${contextText}`:''}`;
 }
