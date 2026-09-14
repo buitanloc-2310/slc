@@ -9,13 +9,13 @@ export class LiveRoom {
 
   async fetch(request) {
     const upgrade = request.headers.get('Upgrade');
-    if (upgrade !== 'websocket') return new Response('WebSocket required', { status: 426 });
+    if (upgrade !== 'websocket') return new Response('Yêu cầu kết nối không hợp lệ.', { status: 426 });
 
     const url = new URL(request.url);
     const parts = url.pathname.split('/').filter(Boolean);
     const classId = parts.length >= 3 ? parts[2] : '';
     const token = url.searchParams.get('token') || '';
-    if (!classId || !token) return new Response('Unauthorized', { status: 401 });
+    if (!classId || !token) return new Response('Phiên tham gia không hợp lệ.', { status: 401 });
 
     let access;
     try {
@@ -28,13 +28,13 @@ export class LiveRoom {
         LIMIT 1
       `).bind(token,classId).first();
     } catch {
-      return new Response('Live access is not ready', { status: 503 });
+      return new Response('Phòng học đang được chuẩn bị. Vui lòng thử lại.', { status: 503 });
     }
-    if (!access) return new Response('Unauthorized', { status: 401 });
+    if (!access) return new Response('Phiên tham gia không hợp lệ.', { status: 401 });
 
     await ensureV13Schema(this.env).catch(()=>{});
     const settings = await getClassLiveSettings(this.env,classId).catch(()=>({waiting_room:0}));
-    const transport = url.searchParams.get('transport') === 'sfu' ? 'sfu' : 'mesh';
+    const transport = url.searchParams.get('mode') === 'primary' ? 'sfu' : 'mesh';
     let maxPeers = transport === 'sfu' ? 120 : 18;
     try {
       if (transport === 'sfu') {
@@ -46,7 +46,7 @@ export class LiveRoom {
         maxPeers = Math.max(4, Math.min(40, Number(row?.value || 18)));
       }
     } catch {}
-    if (this.admittedClients().length >= maxPeers) return new Response('Room capacity reached', { status: 429 });
+    if (this.admittedClients().length >= maxPeers) return new Response('Phòng học đã đạt số người tham gia tối đa.', { status: 429 });
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
@@ -60,7 +60,7 @@ export class LiveRoom {
     this.clients.set(peerId, { ws: server, name, role, userId: access.user_id || null, joinedAt: Date.now(), admitted: !needsWaiting, handRaisedAt: 0, settings });
 
     if (needsWaiting) {
-      server.send(JSON.stringify({ type:'waiting-state', status:'waiting', peerId, room:{classId,maxPeers,transport} }));
+      server.send(JSON.stringify({ type:'waiting-state', status:'waiting', peerId, room:{classId,maxPeers} }));
       this.broadcastToHosts({type:'waiting-request',peer:{id:peerId,name,role}});
       await logLiveEvent(this.env,classId,'waiting.request',access.user_id?`user:${access.user_id}`:`guest:${peerId}`,name,{role}).catch(()=>{});
     } else {
@@ -93,7 +93,7 @@ export class LiveRoom {
   sendWelcome(peerId,classId,maxPeers,transport){
     const current=this.clients.get(peerId); if(!current)return;
     const roster=this.admittedClients().map(([id,p])=>({id,name:p.name,role:p.role,handRaisedAt:p.handRaisedAt||0}));
-    try{current.ws.send(JSON.stringify({type:'welcome',peerId,roster,room:{classId,maxPeers,transport}}));}catch{}
+    try{current.ws.send(JSON.stringify({type:'welcome',peerId,roster,room:{classId,maxPeers}}));}catch{}
   }
 
   async onMessage({evt,peerId,classId,name,role,maxPeers,transport}){

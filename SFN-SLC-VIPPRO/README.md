@@ -1,4 +1,6 @@
-> **Current platform:** Sky First School V13 — Classroom UX + Confidence Camera + Teaching Layer + School Studio + Scale/Resilience.
+## Sky First School VPLUS — VIP PRO
+
+> **Current platform:** Sky First School VPLUS — Classroom UX + Confidence Camera + Teaching Layer + School Studio + Scale/Resilience.
 
 # Trung tâm Học tập Số Sky First Network — V11 Pages Fresh Rebuild
 
