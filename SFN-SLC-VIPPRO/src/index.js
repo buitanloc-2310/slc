@@ -118,7 +118,7 @@ function slugCode(prefix='CLS') { return `${prefix}-${Math.random().toString(36)
 async function hashPassword(password, saltHex = null) {
   const salt = saltHex ? Uint8Array.from(saltHex.match(/.{1,2}/g).map(x=>parseInt(x,16))) : crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name:'PBKDF2', salt, iterations:10000, hash:'SHA-256' }, key, 256);
+  const bits = await crypto.subtle.deriveBits({ name:'PBKDF2', salt, iterations:210000, hash:'SHA-256' }, key, 256);
   const hash = [...new Uint8Array(bits)].map(x=>x.toString(16).padStart(2,'0')).join('');
   const saltOut = [...salt].map(x=>x.toString(16).padStart(2,'0')).join('');
   return { hash, salt: saltOut };
@@ -776,30 +776,41 @@ async function routeApi(request, env, ctx, url) {
 
   const wsMatch=path.match(/^\/api\/live\/([^/]+)\/ws$/);
   if(wsMatch){
-    const id=env.LIVE_ROOM.idFromName(wsMatch[1]); return env.LIVE_ROOM.get(id).fetch(request);
+    if(env.LIVE_ROOM){
+      const id=env.LIVE_ROOM.idFromName(wsMatch[1]); return env.LIVE_ROOM.get(id).fetch(request);
+    }
+    if(env.LIVE_SERVICE){
+      return env.LIVE_SERVICE.fetch(request);
+    }
+    return bad('Phòng học trực tuyến thời gian thực chưa được liên kết. Các chức năng học tập khác vẫn hoạt động bình thường.',503,{code:'LIVE_SIGNALING_NOT_BOUND'});
   }
 
   return bad('API không tồn tại.',404);
 }
 
+export async function handleApiRequest(request, env, ctx) {
+  const url=new URL(request.url); const requestId=crypto.randomUUID();
+  try {
+    if(!url.pathname.startsWith('/api/')) return bad('API không tồn tại.',404);
+    if(request.method==='OPTIONS') return secureResponse(new Response(null,{status:204}),requestId);
+    const session=await getSession(request,env);
+    if(session && !url.pathname.startsWith('/api/exam-attempts/') && !['/api/auth/me','/api/auth/logout'].includes(url.pathname)){
+      const exam=await activeExam(session.user_id,env);
+      if(exam && !url.pathname.startsWith('/api/exam-attempts/') && !url.pathname.startsWith('/api/exams/') && url.pathname!='/api/auth/me' && url.pathname!='/api/auth/logout') return secureResponse(bad('Tài khoản đang ở Chế độ kiểm tra. Hãy hoàn thành hoặc nộp bài trước khi truy cập chức năng khác.',423,exam),requestId);
+    }
+    return secureResponse(await routeApi(request,env,ctx,url),requestId);
+  } catch(e){
+    if(e?.message==='AUTH')return secureResponse(bad('Vui lòng đăng nhập tài khoản SFN.',401),requestId);
+    if(e?.message==='FORBIDDEN')return secureResponse(bad('Bạn không có quyền thực hiện thao tác này.',403),requestId);
+    console.error(e); if((e?.status||500)>=500&&ctx?.waitUntil){ctx.waitUntil((async()=>{try{await env.DB.prepare(`INSERT INTO system_incidents(id,severity,component,message,detail_json,created_at) VALUES(?,'error','pages-function',?,?,CURRENT_TIMESTAMP)`).bind(crypto.randomUUID(),String(e?.message||'Lỗi hệ thống').slice(0,500),JSON.stringify({path:url.pathname,request_id:requestId})).run()}catch{}})());} return secureResponse(bad('Hệ thống gặp sự cố khi xử lý yêu cầu.',e?.status||500,{request_id:requestId}),requestId);
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url=new URL(request.url); const requestId=crypto.randomUUID();
-    try {
-      if(url.pathname.startsWith('/api/')){
-        const session=await getSession(request,env);
-        if(session && !url.pathname.startsWith('/api/exam-attempts/') && !['/api/auth/me','/api/auth/logout'].includes(url.pathname)){
-          const exam=await activeExam(session.user_id,env);
-          const allowed=url.pathname.startsWith('/api/exams/') || url.pathname.startsWith('/api/quiz/')===false && url.pathname==='/api/health';
-          if(exam && !url.pathname.startsWith('/api/exam-attempts/') && !url.pathname.startsWith('/api/exams/') && url.pathname!='/api/auth/me' && url.pathname!='/api/auth/logout') return bad('Tài khoản đang ở Chế độ kiểm tra. Hãy hoàn thành hoặc nộp bài trước khi truy cập chức năng khác.',423,exam);
-        }
-        return secureResponse(await routeApi(request,env,ctx,url),requestId);
-      }
-      return secureResponse(await env.ASSETS.fetch(request),requestId);
-    } catch(e){
-      if(e?.message==='AUTH')return bad('Vui lòng đăng nhập tài khoản SFN.',401);
-      if(e?.message==='FORBIDDEN')return bad('Bạn không có quyền thực hiện thao tác này.',403);
-      console.error(e); if((e?.status||500)>=500&&ctx?.waitUntil){ctx.waitUntil((async()=>{try{await env.DB.prepare(`INSERT INTO system_incidents(id,severity,component,message,detail_json,created_at) VALUES(?,'error','worker',?,?,CURRENT_TIMESTAMP)`).bind(crypto.randomUUID(),String(e?.message||'Lỗi hệ thống').slice(0,500),JSON.stringify({path:url.pathname,request_id:requestId})).run()}catch{}})());} return secureResponse(bad('Hệ thống gặp sự cố khi xử lý yêu cầu.',e?.status||500,{request_id:requestId}),requestId);
-    }
+    if(url.pathname.startsWith('/api/')) return handleApiRequest(request,env,ctx);
+    if(env.ASSETS?.fetch) return secureResponse(await env.ASSETS.fetch(request),requestId);
+    return secureResponse(new Response('Not found',{status:404}),requestId);
   }
 };
