@@ -1,17 +1,22 @@
-# Nâng cấp từ slc-main.zip của người dùng
+# Nâng cấp phòng học trực tuyến
 
-Baseline: đúng file `slc-main.zip` người dùng tải lên. Không lấy lại các ZIP cũ của trợ lý.
+Bản này được nâng trực tiếp từ `slc-main.zip` do người dùng cung cấp.
 
-## Thay đổi thật
-- Giữ nguyên `PBKDF2 iterations: 10000` trong `src/index.js`.
-- Phòng học được thay giao diện toàn màn hình mới, tách khỏi giao diện website thường.
-- Mỗi người tham gia tự bật/tắt micro, camera, chia sẻ màn hình độc lập.
-- WebRTC tạo audio/video transceiver ngay khi kết nối, nên một người bật camera/micro sau khi đã vào phòng vẫn truyền được cho người khác mà không cần vào lại.
-- Signaling fallback chạy bằng Cloudflare Pages + D1, không còn bắt buộc phải có Durable Object để mic/cam/chat hoạt động ở phòng nhỏ.
-- Chat trong buổi học được lưu qua D1 và đồng bộ cho cả tài khoản lẫn khách.
-- Có danh sách người tham gia, trạng thái mic/cam/chia sẻ màn hình, giơ tay, reaction, chọn thiết bị, trạng thái mạng và responsive mobile/tablet/desktop.
-- Học viên không còn thấy mã tham gia lớp trên header lớp; giáo viên/trợ giảng vẫn thấy.
-- Có hỗ trợ TURN qua biến môi trường `TURN_URL`, `TURN_USERNAME`, `TURN_CREDENTIAL` nếu cần vượt NAT/firewall khó.
+## Thay đổi thực tế
+- Giao diện phòng học được tách hoàn toàn khỏi giao diện lớp học thông thường.
+- Micro/camera hoạt động độc lập với signaling: một người ở phòng vẫn có thể bật/tắt và xem preview.
+- Camera 720p mục tiêu, echo cancellation, noise suppression, auto gain control.
+- Chọn micro/camera/loa, đổi camera trước/sau trên thiết bị di động.
+- Audio meter kiểm tra micro.
+- Chia sẻ màn hình, toàn màn hình, giơ tay, phản ứng.
+- Panel Thảo luận / Mọi người / Thiết bị.
+- Chat có fallback qua API lớp học khi WebSocket realtime chưa được liên kết.
+- Tự reconnect WebSocket khi dịch vụ realtime có sẵn.
+- Responsive desktop/tablet/mobile và dùng `playsinline` cho iOS/iPadOS.
+- Endpoint `/api/live/capabilities` cho biết trạng thái realtime mà không làm hỏng phòng khi thiếu Durable Object.
 
-## Giới hạn kỹ thuật
-Kiến trúc WebRTC mesh phù hợp phòng nhỏ. Muốn phòng lớn như Google Meet ở quy mô hàng chục/hàng trăm người cần SFU chuyên dụng (LiveKit/Cloudflare Calls/mediasoup...) và TURN. Bản này không giả vờ biến mesh thành hạ tầng Meet quy mô lớn.
+## Lưu ý hạ tầng
+Cloudflare Pages không tự tạo Durable Object trong project Pages. Để media giữa nhiều người hoạt động qua WebRTC signaling, cần bind `LIVE_ROOM` hoặc `LIVE_SERVICE`. Khi chưa bind, phòng vẫn dùng được camera/micro cục bộ và chat HTTPS cho thành viên lớp.
+
+## Baseline bảo toàn
+PBKDF2 giữ nguyên `iterations: 10000` theo source người dùng cung cấp.
