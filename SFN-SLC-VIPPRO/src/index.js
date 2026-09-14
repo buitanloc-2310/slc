@@ -51,6 +51,19 @@ async function uploadR2(file, env, prefix, ownerId=null, visibility='private') {
 
 function normalizeEmail(s=''){return s.trim().toLowerCase();}
 function str(v=''){return String(v ?? '').trim();}
+function normalizeSetupToken(v=''){
+  return String(v ?? '').replace(/^\uFEFF/, '').trim();
+}
+function setupTokenMatches(provided, configured){
+  const a=normalizeSetupToken(provided), b=normalizeSetupToken(configured);
+  if(!a || !b || a.length!==b.length) return false;
+  let diff=0; for(let i=0;i<a.length;i++) diff |= a.charCodeAt(i)^b.charCodeAt(i);
+  return diff===0;
+}
+async function tokenFingerprint(v=''){
+  const n=normalizeSetupToken(v); if(!n) return '';
+  return (await sha256Text(n)).slice(0,12);
+}
 function htmlEsc(s=''){return String(s ?? '').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
 function validEmail(s=''){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(s));}
 async function sha256Text(s=''){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(String(s)));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');}
@@ -172,10 +185,10 @@ async function routeApi(request, env, ctx, url) {
   const path = url.pathname;
   const method = request.method;
 
-  if (path === '/api/health') return ok({ service:'Sky First Network Digital Learning Center', version:'SLC Stable Setup Fix', installer:'V11_ONE_STATEMENT_ENGINE', schema_stages:V11_SCHEMA_STAGES.length, schema_statements:V11_SCHEMA_STAGES.reduce((n,x)=>n+x.statements.length,0), time:nowIso(), domain:env.APP_URL, environment:{ setup_token_configured:!!env.SETUP_TOKEN, d1_bound:!!env.DB, r2_bound:!!env.FILES, resend_configured:!!env.RESEND_API_KEY } });
+  if (path === '/api/health') return ok({ service:'Sky First Network Digital Learning Center', version:'SLC Production Rebuild', installer:'V11_ONE_STATEMENT_ENGINE', schema_stages:V11_SCHEMA_STAGES.length, schema_statements:V11_SCHEMA_STAGES.reduce((n,x)=>n+x.statements.length,0), time:nowIso(), domain:env.APP_URL, environment:{ setup_token_configured:!!env.SETUP_TOKEN, d1_bound:!!env.DB, r2_bound:!!env.FILES, resend_configured:!!env.RESEND_API_KEY } });
 
   if (path === '/api/setup/installer-info' && method === 'GET') return ok({
-    version:'SLC Stable Setup Fix',
+    version:'SLC Production Rebuild',
     engine:'V11_ONE_STATEMENT_ENGINE',
     uses_db_exec:false,
     uses_pragma_foreign_keys:false,
@@ -191,8 +204,10 @@ async function routeApi(request, env, ctx, url) {
   }
 
   if (path === '/api/setup/install' && method === 'POST') {
-    if (!env.SETUP_TOKEN) return bad('SETUP_TOKEN chưa được cấu hình trong Cloudflare Pages Production. Hãy thêm Secret SETUP_TOKEN và redeploy deployment mới.',500,{code:'SETUP_TOKEN_NOT_CONFIGURED'});
-    if (request.headers.get('x-setup-token') !== env.SETUP_TOKEN) return bad('Mã thiết lập hệ thống không hợp lệ. Mã nhập trên website không trùng SETUP_TOKEN của deployment hiện tại.',403,{code:'SETUP_TOKEN_MISMATCH'});
+    if (!normalizeSetupToken(env.SETUP_TOKEN)) return bad('SETUP_TOKEN chưa được cấu hình trong Cloudflare Pages Production. Hãy thêm Secret SETUP_TOKEN và redeploy deployment mới.',500,{code:'SETUP_TOKEN_NOT_CONFIGURED'});
+    let installBody={}; try{ installBody=await request.clone().json(); }catch{}
+    const providedToken=request.headers.get('x-setup-token') ?? installBody?.setup_token ?? '';
+    if (!setupTokenMatches(providedToken, env.SETUP_TOKEN)) return bad('Mã thiết lập hệ thống không hợp lệ.',403,{code:'SETUP_TOKEN_MISMATCH',provided_length:normalizeSetupToken(providedToken).length,configured_length:normalizeSetupToken(env.SETUP_TOKEN).length,provided_fingerprint:await tokenFingerprint(providedToken),configured_fingerprint:await tokenFingerprint(env.SETUP_TOKEN),hint:'So sánh độ dài/fingerprint. Hệ thống đã tự loại bỏ khoảng trắng đầu/cuối và BOM.'});
     if (!env.DB) return bad('Binding D1 DB chưa được cấu hình cho Cloudflare Pages Production.',500,{code:'D1_NOT_BOUND'});
     try {
       const result=await installSchema(env);
@@ -216,13 +231,13 @@ async function routeApi(request, env, ctx, url) {
   }
 
   if (path === '/api/setup/bootstrap' && method === 'POST') {
-    if (!env.SETUP_TOKEN) return bad('SETUP_TOKEN chưa được cấu hình trong Cloudflare Pages Production.',500,{code:'SETUP_TOKEN_NOT_CONFIGURED'});
-    if (request.headers.get('x-setup-token') !== env.SETUP_TOKEN) return bad('Mã thiết lập hệ thống không hợp lệ.',403,{code:'SETUP_TOKEN_MISMATCH'});
-    if (!env.DB) return bad('Binding D1 DB chưa được cấu hình cho Cloudflare Pages Production.',500,{code:'D1_NOT_BOUND'});
-    let stage='start';
+    if (!normalizeSetupToken(env.SETUP_TOKEN)) return bad('SETUP_TOKEN chưa được cấu hình trong Cloudflare Pages Production.',500,{code:'SETUP_TOKEN_NOT_CONFIGURED'});
+    let stage='read_body';
     try {
-      stage='read_body';
       const body=await request.json();
+      const providedToken=request.headers.get('x-setup-token') ?? body?.setup_token ?? '';
+      if (!setupTokenMatches(providedToken, env.SETUP_TOKEN)) return bad('Mã thiết lập hệ thống không hợp lệ.',403,{code:'SETUP_TOKEN_MISMATCH',provided_length:normalizeSetupToken(providedToken).length,configured_length:normalizeSetupToken(env.SETUP_TOKEN).length,provided_fingerprint:await tokenFingerprint(providedToken),configured_fingerprint:await tokenFingerprint(env.SETUP_TOKEN),hint:'Token đã được chuẩn hóa khoảng trắng/BOM trước khi so sánh.'});
+      if (!env.DB) return bad('Binding D1 DB chưa được cấu hình cho Cloudflare Pages Production.',500,{code:'D1_NOT_BOUND'});
       const fullName=str(body.full_name)||'SFN Super Admin';
       const email=normalizeEmail(str(body.email));
       const password=str(body.password);
@@ -250,7 +265,7 @@ async function routeApi(request, env, ctx, url) {
         stage='insert_super_admin';
         const id=crypto.randomUUID();
         await env.DB.prepare(`INSERT INTO users(id,sfn_no,sfn_id,full_name,email,phone,role,status,profile_json,password_hash,password_salt,created_at,updated_at) VALUES(?,?,?,?,?,?,'super_admin','active','{}',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(id,no,idCode(no),fullName,email,str(body.phone),hp.hash,hp.salt).run();
-        return ok({sfn_id:idCode(no),message:'Đã khởi tạo Super Admin đầu tiên.',version:'SLC Stable Setup Fix'});
+        return ok({sfn_id:idCode(no),message:'Đã khởi tạo Super Admin đầu tiên.',version:'SLC Production Rebuild'});
       } catch(inner) {
         // Release the reserved number when account creation itself fails.
         await env.DB.prepare(`UPDATE counters SET value=? WHERE key='sfn_user' AND value=?`).bind(no-1,no).run().catch(()=>{});
@@ -263,7 +278,7 @@ async function routeApi(request, env, ctx, url) {
         detail:String(e?.message||e||'Lỗi không xác định').slice(0,1200),
         cause:String(e?.cause?.message||'').slice(0,1200),
         retry_safe:true,
-        version:'SLC Stable Setup Fix'
+        version:'SLC Production Rebuild'
       });
     }
   }
