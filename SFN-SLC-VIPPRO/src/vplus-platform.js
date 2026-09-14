@@ -252,29 +252,58 @@ function extractOpenAIResponseSources(data){
   return found.slice(0,8).map((x,i)=>({index:i+1,...x}));
 }
 
+
+export async function testAiAuthentication(env){
+  const cfg=aiProviderConfig(env);
+  const apiKey=String(env?.AI_API_KEY||'').trim();
+  if(!apiKey) return {ok:false,status:0,code:'AI_KEY_MISSING',detail:''};
+  if(cfg.provider!=='openai_responses') return {ok:true,status:null,code:'AUTH_TEST_NOT_APPLICABLE',detail:''};
+  let r;
+  try{
+    r=await fetch('https://api.openai.com/v1/me',{
+      method:'GET',
+      headers:{'authorization':`Bearer ${apiKey}`},
+      signal:AbortSignal.timeout(Math.min(cfg.timeoutMs,15000))
+    });
+  }catch(e){
+    return {ok:false,status:0,code:e?.name==='TimeoutError'?'AI_AUTH_TIMEOUT':'AI_AUTH_NETWORK',detail:String(e?.message||e).slice(0,600)};
+  }
+  let detail='';
+  if(!r.ok){try{detail=(await r.text()).slice(0,600)}catch{}}
+  else {try{await r.body?.cancel?.()}catch{}}
+  return {ok:r.ok,status:r.status,code:r.ok?'AUTH_OK':'AUTH_FAILED',detail};
+}
+
 export async function callAiProvider(env,{messages,temperature=.35,maxTokens=1200,webSearch=false}={}){
   const cfg=aiProviderConfig(env);
   if(!cfg.configured) throw Object.assign(new Error('AI_NOT_READY'),{status:503,publicMessage:'Sky First AI đang được chuẩn bị. Vui lòng quay lại sau.'});
-  const headers={'authorization':`Bearer ${env.AI_API_KEY}`,'content-type':'application/json'};
-  let body;
-  if(cfg.provider==='openai_responses'){
-    body={
-      model:cfg.model,
-      input:(Array.isArray(messages)?messages:[]).map(m=>({role:m.role==='system'?'developer':(m.role||'user'),content:String(m.content||'')})),
-      max_output_tokens:maxTokens
-    };
-    if(webSearch&&cfg.nativeWebSearch) body.tools=[{type:'web_search'}];
-  }else{
-    body={model:cfg.model,messages,temperature,max_tokens:maxTokens};
-  }
-  let r;
-  try{r=await fetch(cfg.url,{method:'POST',headers,body:JSON.stringify(body),signal:AbortSignal.timeout(cfg.timeoutMs)})}
-  catch(e){throw Object.assign(new Error(e?.name==='TimeoutError'?'AI_PROVIDER_TIMEOUT':'AI_PROVIDER_NETWORK'),{status:503,publicMessage:'Sky First AI đang mất nhiều thời gian hơn bình thường. Vui lòng thử lại sau.',internalDetail:String(e?.message||e)})}
-  if(!r.ok){let detail='';try{detail=(await r.text()).slice(0,1200)}catch{};throw Object.assign(new Error('AI_PROVIDER_FAILED'),{status:503,providerStatus:r.status,internalDetail:detail,publicMessage:'Sky First AI tạm thời chưa thể phản hồi. Vui lòng thử lại sau.'})}
+  const apiKey=String(env?.AI_API_KEY||'').trim();
+  const headers={'authorization':`Bearer ${apiKey}`,'content-type':'application/json'};
+  const makeBody=(useWeb)=>{
+    if(cfg.provider==='openai_responses'){
+      const body={model:cfg.model,input:(Array.isArray(messages)?messages:[]).map(m=>({role:m.role==='system'?'developer':(m.role||'user'),content:String(m.content||'')})),max_output_tokens:maxTokens};
+      if(useWeb&&cfg.nativeWebSearch)body.tools=[{type:'web_search'}];
+      return body;
+    }
+    return {model:cfg.model,messages,temperature,max_tokens:maxTokens};
+  };
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const requestOnce=async(useWeb)=>{
+    let r;
+    try{r=await fetch(cfg.url,{method:'POST',headers,body:JSON.stringify(makeBody(useWeb)),signal:AbortSignal.timeout(cfg.timeoutMs)})}
+    catch(e){throw Object.assign(new Error(e?.name==='TimeoutError'?'AI_PROVIDER_TIMEOUT':'AI_PROVIDER_NETWORK'),{status:503,publicMessage:'Sky First AI đang mất nhiều thời gian hơn bình thường. Vui lòng thử lại sau.',internalDetail:String(e?.message||e)})}
+    return r;
+  };
+  let usedWeb=!!(webSearch&&cfg.nativeWebSearch),r=await requestOnce(usedWeb);
+  // Research must never become unusable only because the provider temporarily rejects its web-search tool.
+  if(usedWeb&&[400,404,422].includes(r.status)){try{r.body?.cancel?.()}catch{}usedWeb=false;r=await requestOnce(false)}
+  // One short retry for provider-side transient failures. Do not retry auth/quota/client errors.
+  if([500,502,503,504].includes(r.status)){try{r.body?.cancel?.()}catch{}await sleep(180);r=await requestOnce(usedWeb)}
+  if(!r.ok){let detail='';try{detail=(await r.text()).slice(0,1600)}catch{};let publicMessage='Sky First AI tạm thời chưa thể phản hồi. Vui lòng thử lại sau.';if(r.status===429)publicMessage='Sky First AI đang có nhiều yêu cầu cùng lúc. Vui lòng thử lại sau ít phút.';throw Object.assign(new Error('AI_PROVIDER_FAILED'),{status:r.status===429?429:503,providerStatus:r.status,internalDetail:detail,publicMessage})}
   let data;try{data=await r.json()}catch{throw Object.assign(new Error('AI_PROVIDER_INVALID_JSON'),{status:503,publicMessage:'Sky First AI tạm thời chưa thể phản hồi. Vui lòng thử lại sau.'})}
   const text=cfg.provider==='openai_responses'?extractOpenAIResponseText(data):String(data?.choices?.[0]?.message?.content ?? data?.output_text ?? data?.response ?? '').trim();
   if(!text) throw Object.assign(new Error('AI_EMPTY'),{status:503,publicMessage:'Sky First AI chưa thể tạo câu trả lời lúc này. Vui lòng thử lại.'});
-  return {text,providerId:String(data?.id||''),sources:cfg.provider==='openai_responses'?extractOpenAIResponseSources(data):[],provider:cfg.provider,model:cfg.model};
+  return {text,providerId:String(data?.id||''),sources:cfg.provider==='openai_responses'?extractOpenAIResponseSources(data):[],provider:cfg.provider,model:cfg.model,webSearchUsed:usedWeb};
 }
 
 export function buildAiSystemPrompt({user,classInfo=null,mode='ask',contextText=''}={}){

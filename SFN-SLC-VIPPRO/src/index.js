@@ -2,7 +2,7 @@ import { LiveRoom } from './live-room.js';
 import { V11_SCHEMA_STAGES } from './schema-v11.js';
 import { realtimeSfuConfig, createRealtimeSession, addRealtimeTracks, renegotiateRealtimeSession, ensureRealtimeSfuSchema } from './realtime-sfu.js';
 import { ensureV13Schema, getClassLiveSettings, safeJson, logLiveEvent } from './v13-platform.js';
-import { VPLUS, ensureVPlusSchema, recordPlatformEvent, auditAi, aiConfigured, aiProviderConfig, aiSupportsNativeResearch, callAiProvider, buildAiSystemPrompt, hasPermission, requirePermission, safeUserMessage, consumeAiQuota, fetchResearchSources, parseAiAction } from './vplus-platform.js';
+import { VPLUS, ensureVPlusSchema, recordPlatformEvent, auditAi, aiConfigured, aiProviderConfig, aiSupportsNativeResearch, callAiProvider, testAiAuthentication, buildAiSystemPrompt, hasPermission, requirePermission, safeUserMessage, consumeAiQuota, fetchResearchSources, parseAiAction } from './vplus-platform.js';
 export { LiveRoom };
 
 const SECURITY_HEADERS = {'x-content-type-options':'nosniff','referrer-policy':'strict-origin-when-cross-origin','x-frame-options':'SAMEORIGIN','permissions-policy':'camera=(self), microphone=(self), display-capture=(self), geolocation=()','cross-origin-opener-policy':'same-origin-allow-popups'};
@@ -919,15 +919,20 @@ async function routeApi(request, env, ctx, url) {
   }
 
   if(path==='/api/admin/ai/test' && method==='POST'){
-    await requireRole(request,env,['super_admin']); const started=Date.now(); const cfg=aiProviderConfig(env);
-    if(!cfg.configured)return bad('Sky First AI chưa được cấu hình đầy đủ.',503,{code:'AI_NOT_READY'});
+    await requireRole(request,env,['super_admin']); const started=Date.now(); const cfg=aiProviderConfig(env); const u=await requireUser(request,env);
+    if(!cfg.configured)return bad('Sky First AI chưa được cấu hình đầy đủ.',503,{code:'AI_NOT_READY',auth:{ok:false,status:0,code:'AI_KEY_MISSING'}});
+    const auth=await testAiAuthentication(env);
+    if(!auth.ok){
+      await auditAi(env,{userId:u.user_id,mode:'ask',action:'provider_auth_test',status:'error',detail:{code:auth.code,provider_status:auth.status||null,latency_ms:Date.now()-started}});
+      return bad('Kiểm tra Sky First AI chưa thành công.',503,{code:auth.code,provider_status:auth.status||null,auth:{ok:false,status:auth.status||null,code:auth.code},detail:String(auth.detail||'').slice(0,600),latency_ms:Date.now()-started});
+    }
     try{
       const result=await callAiProvider(env,{messages:[{role:'system',content:'Bạn đang thực hiện kiểm tra kết nối nội bộ. Trả lời thật ngắn.'},{role:'user',content:'Trả lời đúng cụm từ: SKY FIRST AI READY'}],maxTokens:48});
-      await auditAi(env,{userId:(await requireUser(request,env)).user_id,mode:'ask',action:'provider_test',status:'ok',detail:{provider:cfg.provider,model:cfg.model,latency_ms:Date.now()-started}});
-      return ok({ready:true,latency_ms:Date.now()-started,provider:cfg.provider,model:cfg.model,response:String(result.text).slice(0,160)});
+      await auditAi(env,{userId:u.user_id,mode:'ask',action:'provider_test',status:'ok',detail:{provider:cfg.provider,model:cfg.model,auth_status:auth.status,latency_ms:Date.now()-started}});
+      return ok({ready:true,latency_ms:Date.now()-started,provider:cfg.provider,model:cfg.model,response:String(result.text).slice(0,160),native_web_search:cfg.nativeWebSearch,key_present:true,auth:{ok:true,status:auth.status,code:auth.code},responses:{ok:true}});
     }catch(e){
-      const u=await requireUser(request,env); await auditAi(env,{userId:u.user_id,mode:'ask',action:'provider_test',status:'error',detail:{code:String(e?.message||'AI_ERROR'),provider_status:e?.providerStatus||null,latency_ms:Date.now()-started}});
-      return bad('Kiểm tra Sky First AI chưa thành công.',503,{code:String(e?.message||'AI_ERROR'),provider_status:e?.providerStatus||null,detail:String(e?.internalDetail||'').slice(0,600),latency_ms:Date.now()-started});
+      await auditAi(env,{userId:u.user_id,mode:'ask',action:'provider_test',status:'error',detail:{code:String(e?.message||'AI_ERROR'),provider_status:e?.providerStatus||null,auth_status:auth.status,latency_ms:Date.now()-started}});
+      return bad('Kiểm tra Sky First AI chưa thành công.',503,{code:String(e?.message||'AI_ERROR'),provider_status:e?.providerStatus||null,auth:{ok:true,status:auth.status,code:auth.code},responses:{ok:false,status:e?.providerStatus||null},detail:String(e?.internalDetail||'').slice(0,600),latency_ms:Date.now()-started});
     }
   }
 

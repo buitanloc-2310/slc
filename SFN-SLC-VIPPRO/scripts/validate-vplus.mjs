@@ -48,6 +48,19 @@ if(/path === '\/api\/health'[\s\S]{0,180}service:'Sky First School', status:'ava
 else fail('public health endpoint is not minimal as expected');
 
 const ai=read('src/vplus-platform.js');
+
+const indexHtml=read('public/index.html');
+indexHtml.includes('qrcode.min.js')?fail('QR library is still render-blocking'):pass('QR library is not render-blocking');
+exists('public/assets/sky-first-logo-ui.webp')?pass('optimized UI logo exists'):fail('optimized UI logo missing');
+exists('public/_headers')?pass('Pages static cache headers exist'):fail('Pages static cache headers missing');
+app.includes('const _apiInflight=new Map()')?pass('duplicate GET request coalescing enabled'):fail('GET request coalescing missing');
+app.includes('loadQrLibrary')?pass('QR library lazy loader enabled'):fail('QR lazy loader missing');
+app.includes("if(!document.hidden)discoverSfuTracks()")?pass('hidden-page SFU discovery suppression enabled'):fail('SFU hidden-page suppression missing');
+ai.includes("if(usedWeb&&[400,404,422].includes(r.status))")?pass('AI research graceful fallback enabled'):fail('AI research graceful fallback missing');
+ai.includes("if([500,502,503,504].includes(r.status))")?pass('AI transient retry enabled'):fail('AI transient retry missing');
+ai.includes("String(env?.AI_API_KEY||'').trim()")?pass('AI API key is normalized before auth'):fail('AI API key normalization missing');
+ai.includes("https://api.openai.com/v1/me")?pass('OpenAI auth probe exists'):fail('OpenAI auth probe missing');
+server.includes('testAiAuthentication')?pass('System Admin AI test separates authentication'):fail('AI auth diagnostic route missing');
 for(const token of ['hasPermission','requirePermission','consumeAiQuota','auditAi','fetchResearchSources','aiProviderConfig','aiSupportsNativeResearch','openai_responses','web_search'])
   ai.includes(token)?pass(`AI guard present: ${token}`):fail(`AI guard missing: ${token}`);
 
