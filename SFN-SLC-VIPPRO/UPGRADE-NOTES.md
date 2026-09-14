@@ -1,18 +1,17 @@
-# Classroom Experience Rebuild
+# Nâng cấp từ slc-main.zip của người dùng
 
-Bản này được nâng trực tiếp từ source `slc-main.zip` và giữ nguyên cấu hình PBKDF2 `iterations: 10000` trong `src/index.js`.
+Baseline: đúng file `slc-main.zip` người dùng tải lên. Không lấy lại các ZIP cũ của trợ lý.
 
-## Những thay đổi chạy thật
+## Thay đổi thật
+- Giữ nguyên `PBKDF2 iterations: 10000` trong `src/index.js`.
+- Phòng học được thay giao diện toàn màn hình mới, tách khỏi giao diện website thường.
+- Mỗi người tham gia tự bật/tắt micro, camera, chia sẻ màn hình độc lập.
+- WebRTC tạo audio/video transceiver ngay khi kết nối, nên một người bật camera/micro sau khi đã vào phòng vẫn truyền được cho người khác mà không cần vào lại.
+- Signaling fallback chạy bằng Cloudflare Pages + D1, không còn bắt buộc phải có Durable Object để mic/cam/chat hoạt động ở phòng nhỏ.
+- Chat trong buổi học được lưu qua D1 và đồng bộ cho cả tài khoản lẫn khách.
+- Có danh sách người tham gia, trạng thái mic/cam/chia sẻ màn hình, giơ tay, reaction, chọn thiết bị, trạng thái mạng và responsive mobile/tablet/desktop.
+- Học viên không còn thấy mã tham gia lớp trên header lớp; giáo viên/trợ giảng vẫn thấy.
+- Có hỗ trợ TURN qua biến môi trường `TURN_URL`, `TURN_USERNAME`, `TURN_CREDENTIAL` nếu cần vượt NAT/firewall khó.
 
-- Giao diện lớp học mới dạng workspace riêng, không còn card/tab giao diện gốc.
-- 8 dạng lớp: lớp học, khóa học, nhóm học tập, workshop, phụ đạo, đào tạo TNV, CLB học tập, lớp sự kiện.
-- Nhiều mã tham gia cho cùng một lớp, giới hạn lượt dùng, hạn sử dụng, bật/tắt, vai trò học viên/quan sát viên.
-- Mã lớp và SFN ID được ẩn khỏi giao diện học viên thông thường; quản trị/người phụ trách vẫn có công cụ quản lý.
-- Phòng học trực tuyến có pre-join, chọn thiết bị, camera/micro tắt mặc định, khử vọng/giảm ồn/auto gain, HD camera, chia sẻ màn hình, chat, roster, giơ tay, reactions, fullscreen, PiP, phím tắt M/V/H, trạng thái kết nối.
-- Giáo viên/trợ giảng có mute, tắt camera, remove thành viên, mute all, khóa phòng và đổi chế độ phòng.
-- Responsive cho desktop/tablet/mobile. Safari/iOS sẽ tự ẩn tính năng không được trình duyệt hỗ trợ.
-- Durable Object signaling worker thật nằm trong `live-worker/`. Pages cần binding `LIVE_SERVICE` tới Worker `sfn-slc-live` để WebRTC signaling hoạt động.
-
-## Hạ tầng live
-
-WebRTC hiện là mesh, phù hợp phòng nhỏ/vừa. Để chạy lớp đông theo mô hình Google Meet cần bổ sung SFU/TURN. Giao diện không giả lập tính năng đó và không tuyên bố sức chứa lớn khi chưa có SFU.
+## Giới hạn kỹ thuật
+Kiến trúc WebRTC mesh phù hợp phòng nhỏ. Muốn phòng lớn như Google Meet ở quy mô hàng chục/hàng trăm người cần SFU chuyên dụng (LiveKit/Cloudflare Calls/mediasoup...) và TURN. Bản này không giả vờ biến mesh thành hạ tầng Meet quy mô lớn.
