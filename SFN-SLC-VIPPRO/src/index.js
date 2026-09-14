@@ -172,10 +172,10 @@ async function routeApi(request, env, ctx, url) {
   const path = url.pathname;
   const method = request.method;
 
-  if (path === '/api/health') return ok({ service:'Sky First Network Digital Learning Center', version:'V11 Fresh Pages Rebuild', installer:'V11_ONE_STATEMENT_ENGINE', schema_stages:V11_SCHEMA_STAGES.length, schema_statements:V11_SCHEMA_STAGES.reduce((n,x)=>n+x.statements.length,0), time:nowIso(), domain:env.APP_URL, environment:{ setup_token_configured:!!env.SETUP_TOKEN, d1_bound:!!env.DB, r2_bound:!!env.FILES, resend_configured:!!env.RESEND_API_KEY } });
+  if (path === '/api/health') return ok({ service:'Sky First Network Digital Learning Center', version:'SLC Stable Setup Fix', installer:'V11_ONE_STATEMENT_ENGINE', schema_stages:V11_SCHEMA_STAGES.length, schema_statements:V11_SCHEMA_STAGES.reduce((n,x)=>n+x.statements.length,0), time:nowIso(), domain:env.APP_URL, environment:{ setup_token_configured:!!env.SETUP_TOKEN, d1_bound:!!env.DB, r2_bound:!!env.FILES, resend_configured:!!env.RESEND_API_KEY } });
 
   if (path === '/api/setup/installer-info' && method === 'GET') return ok({
-    version:'V11 Fresh Pages Rebuild',
+    version:'SLC Stable Setup Fix',
     engine:'V11_ONE_STATEMENT_ENGINE',
     uses_db_exec:false,
     uses_pragma_foreign_keys:false,
@@ -219,15 +219,53 @@ async function routeApi(request, env, ctx, url) {
     if (!env.SETUP_TOKEN) return bad('SETUP_TOKEN chưa được cấu hình trong Cloudflare Pages Production.',500,{code:'SETUP_TOKEN_NOT_CONFIGURED'});
     if (request.headers.get('x-setup-token') !== env.SETUP_TOKEN) return bad('Mã thiết lập hệ thống không hợp lệ.',403,{code:'SETUP_TOKEN_MISMATCH'});
     if (!env.DB) return bad('Binding D1 DB chưa được cấu hình cho Cloudflare Pages Production.',500,{code:'D1_NOT_BOUND'});
-    const exists=await env.DB.prepare(`SELECT COUNT(*) n FROM users`).first();
-    if(Number(exists.n)>0) return bad('Hệ thống đã được khởi tạo.',409);
-    const body=await request.json(); const fullName=str(body.full_name)||'SFN Super Admin'; const email=normalizeEmail(str(body.email)); const password=str(body.password);
-    if(!email || password.length<12) return bad('Email hợp lệ và mật khẩu tối thiểu 12 ký tự là bắt buộc.');
-    const seq=await env.DB.prepare(`UPDATE counters SET value=value+1 WHERE key='sfn_user' AND value < ? RETURNING value`).bind(MAX_ACCOUNTS).first();
-    if(!seq) return bad('Không thể cấp số tài khoản.',409);
-    const hp=await hashPassword(password); const id=crypto.randomUUID(); const no=Number(seq.value);
-    await env.DB.prepare(`INSERT INTO users(id,sfn_no,sfn_id,full_name,email,phone,role,status,profile_json,password_hash,password_salt,created_at,updated_at) VALUES(?,?,?,?,?,?,'super_admin','active','{}',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(id,no,idCode(no),fullName,email,str(body.phone),hp.hash,hp.salt).run();
-    return ok({sfn_id:idCode(no),message:'Đã khởi tạo Super Admin đầu tiên.'});
+    let stage='start';
+    try {
+      stage='read_body';
+      const body=await request.json();
+      const fullName=str(body.full_name)||'SFN Super Admin';
+      const email=normalizeEmail(str(body.email));
+      const password=str(body.password);
+      if(!email || !validEmail(email) || password.length<12) return bad('Email hợp lệ và mật khẩu tối thiểu 12 ký tự là bắt buộc.');
+
+      stage='check_users';
+      const exists=await env.DB.prepare(`SELECT COUNT(*) AS n FROM users`).first();
+      if(Number(exists?.n||0)>0) return bad('Hệ thống đã được khởi tạo.',409,{code:'ALREADY_BOOTSTRAPPED'});
+
+      // V11.1 deliberately avoids UPDATE ... RETURNING because bootstrap must
+      // remain compatible with the D1 execution path used by Pages Functions.
+      stage='read_counter';
+      const counter=await env.DB.prepare(`SELECT value FROM counters WHERE key='sfn_user'`).first();
+      if(!counter) return bad('Không tìm thấy bộ đếm SFN. Hãy chạy lại bước Cài đặt dữ liệu nền tảng.',500,{code:'SFN_COUNTER_MISSING',stage});
+      const no=Number(counter.value)+1;
+      if(!Number.isInteger(no) || no<1 || no>MAX_ACCOUNTS) return bad('Đã đạt giới hạn 10.000 tài khoản SFN.',409,{code:'ACCOUNT_LIMIT_REACHED'});
+
+      stage='reserve_counter';
+      const reserved=await env.DB.prepare(`UPDATE counters SET value=? WHERE key='sfn_user' AND value=?`).bind(no,Number(counter.value)).run();
+      if(!reserved?.success || Number(reserved?.meta?.changes||0)!==1) return bad('Bộ đếm tài khoản vừa thay đổi. Vui lòng bấm khởi tạo lại.',409,{code:'COUNTER_RACE',retry_safe:true});
+
+      try {
+        stage='hash_password';
+        const hp=await hashPassword(password);
+        stage='insert_super_admin';
+        const id=crypto.randomUUID();
+        await env.DB.prepare(`INSERT INTO users(id,sfn_no,sfn_id,full_name,email,phone,role,status,profile_json,password_hash,password_salt,created_at,updated_at) VALUES(?,?,?,?,?,?,'super_admin','active','{}',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(id,no,idCode(no),fullName,email,str(body.phone),hp.hash,hp.salt).run();
+        return ok({sfn_id:idCode(no),message:'Đã khởi tạo Super Admin đầu tiên.',version:'SLC Stable Setup Fix'});
+      } catch(inner) {
+        // Release the reserved number when account creation itself fails.
+        await env.DB.prepare(`UPDATE counters SET value=? WHERE key='sfn_user' AND value=?`).bind(no-1,no).run().catch(()=>{});
+        throw inner;
+      }
+    } catch(e) {
+      console.error('BOOTSTRAP_V11_1_FAILED',stage,e);
+      return bad('Không thể khởi tạo quản trị đầu tiên.',500,{
+        code:'BOOTSTRAP_FAILED',stage,
+        detail:String(e?.message||e||'Lỗi không xác định').slice(0,1200),
+        cause:String(e?.cause?.message||'').slice(0,1200),
+        retry_safe:true,
+        version:'SLC Stable Setup Fix'
+      });
+    }
   }
 
   if (path === '/api/auth/request-account' && method === 'POST') {
@@ -780,6 +818,16 @@ export async function handleApiRequest(request, env, ctx) {
   try {
     if(!url.pathname.startsWith('/api/')) return bad('API không tồn tại.',404);
     if(request.method==='OPTIONS') return secureResponse(new Response(null,{status:204}),requestId);
+
+    // SETUP/HẠ TẦNG PHẢI CHẠY TRƯỚC SESSION PREFLIGHT.
+    // Trình duyệt có thể còn cookie phiên cũ từ một deployment trước. Nếu schema
+    // phiên cũ chưa đầy đủ, getSession() có thể lỗi trước khi /api/setup/bootstrap
+    // được xử lý và biến mọi lỗi thành 500 chung chung. Các endpoint setup dùng
+    // SETUP_TOKEN riêng nên không phụ thuộc vào session người dùng.
+    if (url.pathname === '/api/health' || url.pathname.startsWith('/api/setup/')) {
+      return secureResponse(await routeApi(request,env,ctx,url),requestId);
+    }
+
     const session=await getSession(request,env);
     if(session && !url.pathname.startsWith('/api/exam-attempts/') && !['/api/auth/me','/api/auth/logout'].includes(url.pathname)){
       const exam=await activeExam(session.user_id,env);
